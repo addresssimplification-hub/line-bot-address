@@ -12,70 +12,62 @@ TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 # =====================
 # 地址簡化
 # =====================
-def clean(addr):
+def clean_address(addr):
     if not addr:
         return ""
 
     addr = addr.strip()
 
-    city_list = [
-        "台北市",
-        "臺北市",
-        "北市",
-        "新北市",
-        "桃園市"
-    ]
+    prefixes = ["台北市", "臺北市", "北市", "新北市", "桃園市"]
 
-    for city in city_list:
-        if addr.startswith(city):
-            return addr.replace(city, "", 1).strip()
+    for p in prefixes:
+        if addr.startswith(p):
+            return addr.replace(p, "", 1).strip()
 
     return addr
 
 
 # =====================
-# 日期判斷（今天不顯示）
+# 日期處理（今天不顯示）
 # =====================
-def format_date(date_str):
-    if not date_str:
+def format_date(text):
+    if not text:
         return ""
 
     today = datetime.now()
 
-    try:
-        # 6/29 or 06/29
-        match = re.findall(r"\d+", date_str)
-        if len(match) >= 2:
-            m, d = int(match[0]), int(match[1])
+    nums = re.findall(r"\d+", text)
 
-            if m == today.month and d == today.day:
-                return ""
-            return f"{m}/{d}"
-    except:
-        pass
+    if len(nums) >= 2:
+        m, d = int(nums[0]), int(nums[1])
 
-    return date_str
+        if m == today.month and d == today.day:
+            return ""
+
+        return f"{m}/{d}"
+
+    return text.strip()
 
 
 # =====================
-# 時間處理
+# 時間處理（保留上午下午）
 # =====================
-def format_time(time_str):
-    if not time_str:
+def format_time(text):
+    if not text:
         return ""
 
-    time_str = time_str.strip()
+    text = text.strip()
+    text = text.replace("預約", "").strip()
 
-    time_str = time_str.replace("預約", "")
-    time_str = time_str.replace("：", "").strip()
-
-    return time_str
+    # 保留 上午 / 下午
+    text = text.replace("：", "")
+    return text
 
 
 # =====================
-# 主解析
+# 解析主邏輯
 # =====================
-def parse_order(text):
+def parse_message(text):
 
     pickup = ""
     dropoff = ""
@@ -84,82 +76,47 @@ def parse_order(text):
     date = ""
     time = ""
 
-    pickup_keywords = ["上車地址", "上車", "起點", "搭車", "接送"]
-    dropoff_keywords = ["下車地址", "下車", "終點", "目的地", "送達"]
-    remark_keywords = ["其他備註", "備註"]
-
     for line in text.split("\n"):
 
         line = line.strip()
         if not line:
             continue
 
-        normalized = line.replace(":", "：")
+        line = line.replace(":", "：")
 
-        # =====================
         # 日期
-        # =====================
-        if "日期" in normalized:
-            parts = normalized.split("：", 1)
-            if len(parts) > 1:
-                date = format_date(parts[1].strip())
+        if "日期" in line:
+            date = format_date(line.split("：")[-1])
 
-        # =====================
         # 時間
-        # =====================
-        if "時間" in normalized:
-            parts = normalized.split("：", 1)
-            if len(parts) > 1:
-                time = format_time(parts[1])
+        if "時間" in line:
+            time = format_time(line.split("：")[-1])
 
-        # =====================
         # 上車
-        # =====================
-        if not pickup:
-            for key in pickup_keywords:
-                if key in normalized:
-                    if "：" in normalized:
-                        pickup = normalized.split("：", 1)[1].strip()
-                    else:
-                        pickup = normalized.replace(key, "").strip()
-                    break
+        if "上車" in line and not pickup:
+            pickup = line.split("：")[-1].strip()
 
-        # =====================
         # 下車
-        =====================
-        if not dropoff:
-            for key in dropoff_keywords:
-                if key in normalized:
-                    if "：" in normalized:
-                        dropoff = normalized.split("：", 1)[1].strip()
-                    else:
-                        dropoff = normalized.replace(key, "").strip()
-                    break
+        if "下車" in line and not dropoff:
+            dropoff = line.split("：")[-1].strip()
 
-        # =====================
         # 人數
-        =====================
-        if any(k in normalized for k in ["乘坐人數", "搭乘人數", "人數"]):
-            numbers = re.findall(r"\d+", normalized)
-            if numbers:
-                pax = int(numbers[0])
+        if "人數" in line:
+            nums = re.findall(r"\d+", line)
+            if nums:
+                pax = int(nums[0])
 
-        # =====================
         # 備註
-        =====================
-        for key in remark_keywords:
-            if key in normalized:
-                if "：" in normalized:
-                    remark = normalized.split("：", 1)[1].strip()
-                break
+        if "備註" in line:
+            remark = line.split("：")[-1].strip()
 
-    # 沒上車不回覆
+    # 沒上車地址直接不回
     if not pickup:
         return ""
 
     # =====================
-    # 加價
-    =====================
+    # 加價規則
+    # =====================
     fee = 0
     if pax == 5:
         fee = 100
@@ -168,34 +125,37 @@ def parse_order(text):
 
     # =====================
     # 組輸出
-    =====================
-    result = ""
+    # =====================
+    output = []
 
     # 日期 + 時間
     dt = " ".join([x for x in [date, time] if x])
-
     if dt:
-        result += dt + "\n"
+        output.append(dt)
 
-    result += f"⬆️{clean(pickup)}"
+    # 上車
+    output.append(f"⬆️{clean_address(pickup)}")
 
+    # 下車（有才顯示）
     if dropoff:
-        result += f"\n下車地址：{clean(dropoff)}"
+        output.append(f"下車地址：{clean_address(dropoff)}")
 
-    extra = ""
+    # 底部資訊（只有人數>4 or 備註）
+    bottom = []
 
     if pax > 4:
-        extra += f"({pax})"
+        extra = f"({pax})"
         if fee > 0:
             extra += f"➕{fee}"
+        bottom.append(extra)
 
     if remark:
-        extra += f"✅{remark}"
+        bottom.append(f"✅{remark}")
 
-    if extra:
-        result += f"\n{extra}"
+    if bottom:
+        output.append("".join(bottom))
 
-    return result
+    return "\n".join(output)
 
 
 # =====================
@@ -205,22 +165,23 @@ def parse_order(text):
 def callback():
 
     body = request.get_json()
-    print("收到:", body)
+
+    if not body:
+        return "OK", 200
 
     for event in body.get("events", []):
 
         if event.get("type") != "message":
             continue
 
-        message = event.get("message", {})
-
-        if message.get("type") != "text":
+        msg = event.get("message", {})
+        if msg.get("type") != "text":
             continue
 
-        text = message.get("text", "")
+        text = msg.get("text", "")
         reply_token = event.get("replyToken")
 
-        result = parse_order(text)
+        result = parse_message(text)
 
         if not result:
             continue
@@ -247,6 +208,14 @@ def callback():
         )
 
     return "OK", 200
+
+
+# =====================
+# health check
+# =====================
+@app.route("/")
+def home():
+    return "OK"
 
 
 if __name__ == "__main__":
