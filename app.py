@@ -53,7 +53,7 @@ def parse_date(text):
 
 
 # =====================
-# 🔥 時間處理（完整版：凌晨/早上/下午/晚上）
+# 時間處理（完整語意版）
 # =====================
 def parse_time(text):
     if not text:
@@ -62,12 +62,6 @@ def parse_time(text):
     text = text.strip()
     text = text.replace("預約", "").replace("時間", "").replace("：", "").replace(" ", "")
 
-    if not text:
-        return ""
-
-    # =====================
-    # 語意時間
-    # =====================
     period = ""
 
     if "凌晨" in text:
@@ -85,18 +79,15 @@ def parse_time(text):
     elif "晚上" in text:
         period = "晚上"
 
-    # =====================
-    # 數字時間
-    # =====================
     match = re.search(r"(\d{1,2})(?:[:：]?(\d{0,2}))?", text)
 
     if not match:
-        return period if period else ""
+        return period
 
     hour = match.group(1)
     minute = match.group(2)
 
-    if not hour or hour == "0":
+    if not hour:
         return period
 
     if not minute:
@@ -112,29 +103,61 @@ def parse_time(text):
 
 
 # =====================
-# 解析訊息
+# 智慧上下車解析（重點）
+# =====================
+def smart_parse(lines):
+    pickup = ""
+    dropoff = ""
+
+    labeled = False
+    addresses = []
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        if "⬆️" in line or "上車" in line:
+            pickup = line.split("：")[-1].replace("⬆️", "").strip()
+            labeled = True
+
+        elif "⬇️" in line or "下車" in line:
+            dropoff = line.split("：")[-1].replace("⬇️", "").strip()
+            labeled = True
+
+        elif "地址" not in line and "備註" not in line and "時間" not in line:
+            if "日期" not in line:
+                addresses.append(line)
+
+    if not labeled:
+        if len(addresses) >= 1:
+            pickup = addresses[0]
+        if len(addresses) >= 2:
+            dropoff = addresses[1]
+
+    return pickup, dropoff
+
+
+# =====================
+# 主解析
 # =====================
 def parse_message(text):
 
-    pickup = ""
-    dropoff = ""
+    lines = text.split("\n")
+
+    pickup, dropoff = smart_parse(lines)
+
     pax = 0
     remark = ""
     date = ""
     time = ""
 
-    for line in text.split("\n"):
+    for line in lines:
         line = line.strip()
         if not line:
             continue
 
-        if "上車地址" in line:
-            pickup = line.split("：")[-1].strip()
-
-        elif "下車地址" in line:
-            dropoff = line.split("：")[-1].strip()
-
-        elif "乘坐人數" in line:
+        if "乘坐人數" in line:
             nums = re.findall(r"\d+", line)
             pax = int(nums[0]) if nums else 0
 
@@ -147,7 +170,6 @@ def parse_message(text):
         elif "時間" in line:
             time = parse_time(line.split("：")[-1])
 
-    # 沒上車直接不回
     if not pickup:
         return ""
 
@@ -161,21 +183,21 @@ def parse_message(text):
     # 上車
     output.append(f"⬆️{clean_address(pickup)}")
 
-    # 下車（可選）
+    # 下車
     if dropoff:
-        output.append(f"下車地址：{clean_address(dropoff)}")
+        output.append(f"⬇️{clean_address(dropoff)}")
 
-    # 最下方資訊（人數 + 備註）
+    # 最下方資訊
     bottom = []
 
     if pax > 4:
-        bottom.append(f"({pax})")
+        bottom.append(f"人數:{pax}")
 
     if remark:
-        bottom.append(f"✅{remark}")
+        bottom.append(f"備註:{remark}")
 
     if bottom:
-        output.append("".join(bottom))
+        output.append("｜".join(bottom))
 
     return "\n".join(output)
 
