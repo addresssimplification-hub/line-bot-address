@@ -53,7 +53,7 @@ def parse_date(text):
 
 
 # =====================
-# 時間處理（完整語意版）
+# 時間處理（語意版）
 # =====================
 def parse_time(text):
     if not text:
@@ -103,7 +103,7 @@ def parse_time(text):
 
 
 # =====================
-# 智慧上下車解析（重點）
+# 智慧上下車解析
 # =====================
 def smart_parse(lines):
     pickup = ""
@@ -139,7 +139,7 @@ def smart_parse(lines):
 
 
 # =====================
-# 主解析
+# 解析主邏輯
 # =====================
 def parse_message(text):
 
@@ -183,9 +183,9 @@ def parse_message(text):
     # 上車
     output.append(f"⬆️{clean_address(pickup)}")
 
-    # 下車
+    # 下車（已修正：不用⬇️）
     if dropoff:
-        output.append(f"⬇️{clean_address(dropoff)}")
+        output.append(f"下車地址：{clean_address(dropoff)}")
 
     # 最下方資訊
     bottom = []
