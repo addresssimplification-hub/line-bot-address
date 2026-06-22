@@ -9,7 +9,7 @@ TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 
 
 # =====================
-# 健康檢查
+# 基本服務
 # =====================
 @app.route("/")
 def home():
@@ -17,38 +17,28 @@ def home():
 
 
 # =====================
-# 地址清理
+# 清理地址（避免「地址地址」問題）
 # =====================
-def clean_address(addr):
-    if not addr:
-        return ""
-
-    addr = addr.strip()
-
-    for city in ["台北市", "臺北市", "北市", "新北市", "桃園市"]:
-        if addr.startswith(city):
-            addr = addr.replace(city, "", 1).strip()
-
-    return addr
-
-
-# =====================
-# 移除標籤，避免重複文字
-# =====================
-def extract_address(text):
+def clean_address(text):
     if not text:
         return ""
 
     text = text.strip()
 
-    for k in ["上車", "下車", "⬆️", "⬇️", "：", ":"]:
+    # 移除標籤
+    for k in ["上車", "下車", "地址", "⬆️", "⬇️", "：", ":"]:
         text = text.replace(k, "")
+
+    # 移除縣市前綴
+    for city in ["台北市", "臺北市", "北市", "新北市", "桃園市"]:
+        if text.startswith(city):
+            text = text.replace(city, "", 1)
 
     return text.strip()
 
 
 # =====================
-# 智慧上下車解析
+# 智慧抓上下車
 # =====================
 def smart_parse(lines):
     pickup = ""
@@ -60,16 +50,16 @@ def smart_parse(lines):
             continue
 
         if "上車" in line or "⬆️" in line:
-            pickup = extract_address(line)
+            pickup = clean_address(line)
 
         elif "下車" in line or "⬇️" in line:
-            dropoff = extract_address(line)
+            dropoff = clean_address(line)
 
     return pickup, dropoff
 
 
 # =====================
-# 日期解析
+# 日期處理
 # =====================
 def parse_date(text):
     if not text:
@@ -87,7 +77,7 @@ def parse_date(text):
 
 
 # =====================
-# 時間解析（語意）
+# 時間處理（1545 / 下午5:00 / 晚上）
 # =====================
 def parse_time(text):
     if not text:
@@ -95,35 +85,20 @@ def parse_time(text):
 
     text = text.replace("預約", "").replace("時間", "").replace("：", "").replace(" ", "")
 
-    period = ""
+    # 1545 → 15:45
+    if re.fullmatch(r"\d{3,4}", text):
+        if len(text) == 3:
+            text = "0" + text
+        return f"{text[:2]}:{text[2:]}"
 
-    if "凌晨" in text:
-        period = "凌晨"
-    elif "早上" in text:
-        period = "早上"
-    elif "上午" in text:
-        period = "上午"
-    elif "中午" in text:
-        period = "中午"
-    elif "下午" in text:
-        period = "下午"
-    elif "傍晚" in text:
-        period = "傍晚"
-    elif "晚上" in text:
-        period = "晚上"
+    # 一般時間
+    match = re.search(r"(\d{1,2})[:：]?(\d{0,2})", text)
+    if match:
+        h = match.group(1)
+        m = match.group(2) if match.group(2) else "00"
+        return f"{int(h)}:{m}"
 
-    match = re.search(r"(\d{1,2})(?:[:：]?(\d{0,2}))?", text)
-
-    if not match:
-        return period
-
-    hour = match.group(1)
-    minute = match.group(2)
-
-    if not minute:
-        minute = "00"
-
-    return f"{period}{int(hour)}:{minute}" if period else f"{int(hour)}:{minute}"
+    return text
 
 
 # =====================
@@ -176,20 +151,21 @@ def parse_message(text):
         output.append(dt)
 
     # 上車
-    output.append(f"⬆️{clean_address(pickup)}")
+    if pickup:
+        output.append(f"⬆️{pickup}")
 
     # 下車
     if dropoff:
-        output.append(f"下車地址：{clean_address(dropoff)}")
+        output.append(f"下車地址：{dropoff}")
 
     # 底部資訊
     bottom = []
 
-    # 人數加價（>4才顯示）
+    # 人數（>4 才顯示）
     if pax > 4:
         bottom.append(f"{pax}人 +{calc_fee(pax)}")
 
-    # 備註（加 ✅）
+    # 備註
     if remark:
         bottom.append(f"✅{remark}")
 
@@ -200,7 +176,7 @@ def parse_message(text):
 
 
 # =====================
-# LINE Webhook
+# LINE webhook
 # =====================
 @app.route("/callback", methods=["POST"])
 def callback():
