@@ -7,7 +7,9 @@ from linebot.models import MessageEvent, TextSendMessage
 
 app = Flask(__name__)
 
-# ===== LINE KEY =====
+# =====================
+# LINE 設定（Render 環境變數）
+# =====================
 TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
@@ -15,17 +17,23 @@ line_bot_api = LineBotApi(TOKEN)
 handler = WebhookHandler(SECRET)
 
 
-# ===== 地址簡化 =====
+# =====================
+# 地址簡化
+# =====================
 def clean(addr):
     if not addr:
         return ""
+
     for city in ["台北市", "新北市", "桃園市"]:
         if addr.startswith(city):
             return addr.replace(city, "", 1)
+
     return addr
 
 
-# ===== 解析 =====
+# =====================
+# 解析訊息
+# =====================
 def parse(text):
     pickup = ""
     dropoff = ""
@@ -33,6 +41,10 @@ def parse(text):
     remark = ""
 
     for line in text.split("\n"):
+
+        # 統一冒號格式（避免 LINE : / ：問題）
+        line = line.replace(":", "：")
+
         if "上車地址" in line:
             pickup = line.split("：")[-1].strip()
 
@@ -48,8 +60,10 @@ def parse(text):
         elif "其他備註" in line:
             remark = line.split("：")[-1].strip()
 
+    # 加價規則
     fee = (pax - 4) * 100 if pax > 4 else 0
 
+    # 組文字
     result = f"⬆️{clean(pickup)}\n下車地址：{clean(dropoff)}\n({pax})"
 
     if fee > 0:
@@ -61,7 +75,9 @@ def parse(text):
     return result
 
 
-# ===== webhook =====
+# =====================
+# LINE Webhook
+# =====================
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature")
@@ -70,6 +86,9 @@ def callback():
     try:
         events = handler.handle(body, signature)
     except InvalidSignatureError:
+        return "OK", 200
+    except Exception as e:
+        print("Webhook error:", e)
         return "OK", 200
 
     if not events:
@@ -87,5 +106,8 @@ def callback():
     return "OK", 200
 
 
+# =====================
+# 本地測試用
+# =====================
 if __name__ == "__main__":
     app.run()
