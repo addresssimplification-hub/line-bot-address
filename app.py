@@ -17,7 +17,7 @@ def home():
 
 
 # =====================
-# 清理地址（避免「地址地址」問題）
+# 清理地址
 # =====================
 def clean_address(text):
     if not text:
@@ -25,11 +25,9 @@ def clean_address(text):
 
     text = text.strip()
 
-    # 移除標籤
     for k in ["上車", "下車", "地址", "⬆️", "⬇️", "：", ":"]:
         text = text.replace(k, "")
 
-    # 移除縣市前綴
     for city in ["台北市", "臺北市", "北市", "新北市", "桃園市"]:
         if text.startswith(city):
             text = text.replace(city, "", 1)
@@ -38,7 +36,7 @@ def clean_address(text):
 
 
 # =====================
-# 智慧抓上下車
+# 智慧上下車
 # =====================
 def smart_parse(lines):
     pickup = ""
@@ -46,8 +44,6 @@ def smart_parse(lines):
 
     for line in lines:
         line = line.strip()
-        if not line:
-            continue
 
         if "上車" in line or "⬆️" in line:
             pickup = clean_address(line)
@@ -59,13 +55,15 @@ def smart_parse(lines):
 
 
 # =====================
-# 日期處理
+# 日期（新增：當下語意不顯示）
 # =====================
 def parse_date(text):
     if not text:
         return ""
 
-    if "當日" in text:
+    ban_words = ["當日", "今天", "今日", "立即", "現在", "馬上"]
+
+    if any(w in text for w in ban_words):
         return ""
 
     nums = re.findall(r"\d+", text)
@@ -77,21 +75,24 @@ def parse_date(text):
 
 
 # =====================
-# 時間處理（1545 / 下午5:00 / 晚上）
+# 時間（新增：當下語意不顯示）
 # =====================
 def parse_time(text):
     if not text:
         return ""
 
+    ban_words = ["現在", "立即", "馬上", "立刻", "隨時"]
+
+    if any(w in text for w in ban_words):
+        return ""
+
     text = text.replace("預約", "").replace("時間", "").replace("：", "").replace(" ", "")
 
-    # 1545 → 15:45
     if re.fullmatch(r"\d{3,4}", text):
         if len(text) == 3:
             text = "0" + text
         return f"{text[:2]}:{text[2:]}"
 
-    # 一般時間
     match = re.search(r"(\d{1,2})[:：]?(\d{0,2})", text)
     if match:
         h = match.group(1)
@@ -99,6 +100,21 @@ def parse_time(text):
         return f"{int(h)}:{m}"
 
     return text
+
+
+# =====================
+# 備註（新增過濾）
+# =====================
+def parse_remark(text):
+    if not text:
+        return ""
+
+    remark = text.split("：")[-1].strip()
+
+    if remark in ["無", "沒有", "-", "", "不用"]:
+        return ""
+
+    return remark
 
 
 # =====================
@@ -132,7 +148,7 @@ def parse_message(text):
             pax = int(nums[0]) if nums else 0
 
         elif "其他備註" in line:
-            remark = line.split("：")[-1].strip()
+            remark = parse_remark(line)
 
         elif "日期" in line:
             date = parse_date(line.split("：")[-1])
@@ -151,21 +167,18 @@ def parse_message(text):
         output.append(dt)
 
     # 上車
-    if pickup:
-        output.append(f"⬆️{pickup}")
+    output.append(f"⬆️{pickup}")
 
     # 下車
     if dropoff:
         output.append(f"下車地址：{dropoff}")
 
-    # 底部資訊
+    # 底部
     bottom = []
 
-    # 人數（>4 才顯示）
     if pax > 4:
         bottom.append(f"{pax}人 +{calc_fee(pax)}")
 
-    # 備註
     if remark:
         bottom.append(f"✅{remark}")
 
