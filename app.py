@@ -1,20 +1,13 @@
-from flask import Flask, request, abort
+from flask import Flask, request
 import os
-
-from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextSendMessage
+import requests
 
 app = Flask(__name__)
 
 # =====================
-# LINE 設定（Render 環境變數）
+# LINE TOKEN（Render 環境變數）
 # =====================
 TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-SECRET = os.getenv("LINE_CHANNEL_SECRET")
-
-line_bot_api = LineBotApi(TOKEN)
-handler = WebhookHandler(SECRET)
 
 
 # =====================
@@ -23,11 +16,9 @@ handler = WebhookHandler(SECRET)
 def clean(addr):
     if not addr:
         return ""
-
     for city in ["台北市", "新北市", "桃園市"]:
         if addr.startswith(city):
             return addr.replace(city, "", 1)
-
     return addr
 
 
@@ -41,8 +32,6 @@ def parse(text):
     remark = ""
 
     for line in text.split("\n"):
-
-        # 統一冒號格式（避免 LINE : / ：問題）
         line = line.replace(":", "：")
 
         if "上車地址" in line:
@@ -60,10 +49,8 @@ def parse(text):
         elif "其他備註" in line:
             remark = line.split("：")[-1].strip()
 
-    # 加價規則
     fee = (pax - 4) * 100 if pax > 4 else 0
 
-    # 組文字
     result = f"⬆️{clean(pickup)}\n下車地址：{clean(dropoff)}\n({pax})"
 
     if fee > 0:
@@ -76,38 +63,52 @@ def parse(text):
 
 
 # =====================
-# LINE Webhook
+# LINE webhook（REST API）
 # =====================
 @app.route("/callback", methods=["POST"])
 def callback():
-    signature = request.headers.get("X-Line-Signature")
-    body = request.get_data(as_text=True)
+    body = request.get_json()
 
-    try:
-        events = handler.handle(body, signature)
-    except InvalidSignatureError:
-        return "OK", 200
-    except Exception as e:
-        print("Webhook error:", e)
-        return "OK", 200
+    for event in body["events"]:
 
-    if not events:
-        return "OK", 200
+        # 只處理文字訊息
+        if event["type"] != "message":
+            continue
 
-    for event in events:
-        if isinstance(event, MessageEvent):
-            msg = parse(event.message.text)
+        if event["message"]["type"] != "text":
+            continue
 
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=msg)
-            )
+        text = event["message"]["text"]
+        reply_token = event["replyToken"]
+
+        msg = parse(text)
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {TOKEN}"
+        }
+
+        data = {
+            "replyToken": reply_token,
+            "messages": [
+                {
+                    "type": "text",
+                    "text": msg
+                }
+            ]
+        }
+
+        requests.post(
+            "https://api.line.me/v2/bot/message/reply",
+            headers=headers,
+            json=data
+        )
 
     return "OK", 200
 
 
 # =====================
-# 本地測試用
+# 本地測試
 # =====================
 if __name__ == "__main__":
     app.run()
