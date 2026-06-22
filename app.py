@@ -9,7 +9,7 @@ TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 
 
 # =====================
-# 基本頁面
+# 健康檢查
 # =====================
 @app.route("/")
 def home():
@@ -53,7 +53,7 @@ def parse_date(text):
 
 
 # =====================
-# 🔥 修正後時間處理（不會再變 500:00）
+# 🔥 時間處理（完整版：凌晨/早上/下午/晚上）
 # =====================
 def parse_time(text):
     if not text:
@@ -62,30 +62,53 @@ def parse_time(text):
     text = text.strip()
     text = text.replace("預約", "").replace("時間", "").replace("：", "").replace(" ", "")
 
-    # 抓 上午/下午 + 時間
-    m = re.search(r"(上午|下午)?(\d{1,2})(?:[:：]?(\d{0,2}))?", text)
-
-    if not m:
+    if not text:
         return ""
 
-    period = m.group(1) or ""
-    hour = m.group(2)
-    minute = m.group(3)
+    # =====================
+    # 語意時間
+    # =====================
+    period = ""
 
-    if not hour:
-        return ""
+    if "凌晨" in text:
+        period = "凌晨"
+    elif "早上" in text:
+        period = "早上"
+    elif "上午" in text:
+        period = "上午"
+    elif "中午" in text:
+        period = "中午"
+    elif "下午" in text:
+        period = "下午"
+    elif "傍晚" in text:
+        period = "傍晚"
+    elif "晚上" in text:
+        period = "晚上"
 
-    if hour == "0" or hour == "00":
-        return ""
+    # =====================
+    # 數字時間
+    # =====================
+    match = re.search(r"(\d{1,2})(?:[:：]?(\d{0,2}))?", text)
+
+    if not match:
+        return period if period else ""
+
+    hour = match.group(1)
+    minute = match.group(2)
+
+    if not hour or hour == "0":
+        return period
 
     if not minute:
         minute = "00"
 
-    # 避免 5:0
     if len(minute) == 1:
-        minute = minute + "0"
+        minute += "0"
 
-    return f"{period}{int(hour)}:{minute}"
+    if period:
+        return f"{period}{int(hour)}:{minute}"
+
+    return f"{int(hour)}:{minute}"
 
 
 # =====================
@@ -124,7 +147,7 @@ def parse_message(text):
         elif "時間" in line:
             time = parse_time(line.split("：")[-1])
 
-    # 沒上車地址直接不回
+    # 沒上車直接不回
     if not pickup:
         return ""
 
@@ -138,11 +161,11 @@ def parse_message(text):
     # 上車
     output.append(f"⬆️{clean_address(pickup)}")
 
-    # 下車（有才顯示）
+    # 下車（可選）
     if dropoff:
         output.append(f"下車地址：{clean_address(dropoff)}")
 
-    # 最下方資訊
+    # 最下方資訊（人數 + 備註）
     bottom = []
 
     if pax > 4:
