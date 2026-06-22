@@ -39,8 +39,6 @@ def parse_date(text):
     if not text:
         return ""
 
-    text = text.strip()
-
     if "當日" in text:
         return ""
 
@@ -53,13 +51,12 @@ def parse_date(text):
 
 
 # =====================
-# 時間處理（語意版）
+# 時間處理（含早晚語意）
 # =====================
 def parse_time(text):
     if not text:
         return ""
 
-    text = text.strip()
     text = text.replace("預約", "").replace("時間", "").replace("：", "").replace(" ", "")
 
     period = ""
@@ -87,28 +84,27 @@ def parse_time(text):
     hour = match.group(1)
     minute = match.group(2)
 
-    if not hour:
-        return period
-
     if not minute:
         minute = "00"
 
-    if len(minute) == 1:
-        minute += "0"
-
-    if period:
-        return f"{period}{int(hour)}:{minute}"
-
-    return f"{int(hour)}:{minute}"
+    return f"{period}{int(hour)}:{minute}" if period else f"{int(hour)}:{minute}"
 
 
 # =====================
-# 智慧上下車解析
+# 人數加價規則
+# =====================
+def calc_fee(pax):
+    if pax <= 4:
+        return 0
+    return (pax - 4) * 100
+
+
+# =====================
+# 智慧抓上下車
 # =====================
 def smart_parse(lines):
     pickup = ""
     dropoff = ""
-
     labeled = False
     addresses = []
 
@@ -139,7 +135,7 @@ def smart_parse(lines):
 
 
 # =====================
-# 解析主邏輯
+# 主解析
 # =====================
 def parse_message(text):
 
@@ -154,8 +150,6 @@ def parse_message(text):
 
     for line in lines:
         line = line.strip()
-        if not line:
-            continue
 
         if "乘坐人數" in line:
             nums = re.findall(r"\d+", line)
@@ -183,18 +177,20 @@ def parse_message(text):
     # 上車
     output.append(f"⬆️{clean_address(pickup)}")
 
-    # 下車（已修正：不用⬇️）
+    # 下車
     if dropoff:
         output.append(f"下車地址：{clean_address(dropoff)}")
 
-    # 最下方資訊
+    # 底部資訊
     bottom = []
 
+    # 人數（>4 才顯示）
     if pax > 4:
-        bottom.append(f"人數:{pax}")
+        bottom.append(f"{pax}人 +{calc_fee(pax)}")
 
+    # 備註（加 ✅）
     if remark:
-        bottom.append(f"備註:{remark}")
+        bottom.append(f"✅{remark}")
 
     if bottom:
         output.append("｜".join(bottom))
@@ -203,7 +199,7 @@ def parse_message(text):
 
 
 # =====================
-# LINE webhook
+# LINE Webhook
 # =====================
 @app.route("/callback", methods=["POST"])
 def callback():
