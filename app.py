@@ -52,19 +52,36 @@ def parse_order(text):
         elif "其他備註" in line:
             remark = line.split("：", 1)[1].strip()
 
+    # ❌ 沒有上車地址 → 不回覆
+    if not pickup:
+        return ""
+
+    # =====================
     # 加價規則
+    # =====================
     fee = 0
     if pax == 5:
         fee = 100
     elif pax == 6:
         fee = 200
 
+    # =====================
     # 組輸出
-    result = f"⬆️{clean(pickup)}\n下車地址：{clean(dropoff)}\n({pax})"
+    # =====================
+    result = f"⬆️{clean(pickup)}"
 
-    if fee > 0:
-        result += f"➕{fee}"
+    # 下車地址（有才顯示）
+    if dropoff:
+        result += f"\n下車地址：{clean(dropoff)}"
 
+    # 只有 >4 才顯示人數
+    if pax > 4:
+        result += f"\n({pax})"
+
+        if fee > 0:
+            result += f"➕{fee}"
+
+    # 備註
     if remark:
         result += f"✅{remark}"
 
@@ -87,7 +104,6 @@ def callback():
 
     for event in body.get("events", []):
 
-        # 只處理文字訊息
         if event.get("type") != "message":
             continue
 
@@ -100,6 +116,10 @@ def callback():
         reply_token = event.get("replyToken")
 
         result = parse_order(text)
+
+        # 如果沒有內容就不回覆
+        if not result:
+            return "OK", 200
 
         headers = {
             "Authorization": f"Bearer {TOKEN}",
