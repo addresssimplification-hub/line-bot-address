@@ -4,9 +4,7 @@ import os
 
 app = Flask(__name__)
 
-# =====================
-# LINE TOKEN
-# =====================
+# LINE Channel Access Token
 TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 
 
@@ -52,7 +50,7 @@ def parse_order(text):
         elif "其他備註" in line:
             remark = line.split("：", 1)[1].strip()
 
-    # ❌ 沒有上車地址 → 不回覆
+    # 沒有上車地址就不回覆
     if not pickup:
         return ""
 
@@ -60,8 +58,10 @@ def parse_order(text):
     # 加價規則
     # =====================
     fee = 0
+
     if pax == 5:
         fee = 100
+
     elif pax == 6:
         fee = 200
 
@@ -70,37 +70,47 @@ def parse_order(text):
     # =====================
     result = f"⬆️{clean(pickup)}"
 
-    # 下車地址（有才顯示）
+    # 有下車地址才顯示
     if dropoff:
         result += f"\n下車地址：{clean(dropoff)}"
 
-    # 只有 >4 才顯示人數
+    # 最後一行
+    extra = ""
+
+    # 人數大於4才顯示
     if pax > 4:
-        result += f"\n({pax})"
+        extra += f"({pax})"
 
         if fee > 0:
-            result += f"➕{fee}"
+            extra += f"➕{fee}"
 
     # 備註
     if remark:
-        result += f"✅{remark}"
+        extra += f"✅{remark}"
+
+    if extra:
+        result += f"\n{extra}"
 
     return result
 
 
 # =====================
-# Flask routes
+# 首頁
 # =====================
 @app.route("/")
 def home():
     return "OK"
 
 
+# =====================
+# LINE Webhook
+# =====================
 @app.route("/callback", methods=["POST"])
 def callback():
+
     body = request.get_json()
 
-    print("BODY =", body)
+    print(body)
 
     for event in body.get("events", []):
 
@@ -117,9 +127,8 @@ def callback():
 
         result = parse_order(text)
 
-        # 如果沒有內容就不回覆
         if not result:
-            return "OK", 200
+            continue
 
         headers = {
             "Authorization": f"Bearer {TOKEN}",
@@ -146,4 +155,4 @@ def callback():
 
 
 if __name__ == "__main__":
-    app.run()
+    app.run(host="0.0.0.0", port=10000)
