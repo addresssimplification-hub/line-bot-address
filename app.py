@@ -17,9 +17,17 @@ def clean(addr):
 
     addr = addr.strip()
 
-    for city in ["台北市", "新北市", "桃園市"]:
+    city_list = [
+        "台北市",
+        "臺北市",
+        "北市",
+        "新北市",
+        "桃園市"
+    ]
+
+    for city in city_list:
         if addr.startswith(city):
-            return addr.replace(city, "", 1)
+            return addr.replace(city, "", 1).strip()
 
     return addr
 
@@ -136,7 +144,6 @@ def parse_order(text):
     # =====================
     result = f"⬆️{clean(pickup)}"
 
-    # 有下車地址才顯示
     if dropoff:
         result += f"\n下車地址：{clean(dropoff)}"
 
@@ -153,7 +160,7 @@ def parse_order(text):
     if remark:
         extra += f"✅{remark}"
 
-    # 統一顯示在最後一行
+    # 最後一行統一顯示
     if extra:
         result += f"\n{extra}"
 
@@ -176,7 +183,7 @@ def callback():
 
     body = request.get_json()
 
-    print(body)
+    print("收到事件:", body)
 
     for event in body.get("events", []):
 
@@ -211,11 +218,13 @@ def callback():
             ]
         }
 
-        requests.post(
+        r = requests.post(
             "https://api.line.me/v2/bot/message/reply",
             headers=headers,
             json=data
         )
+
+        print("LINE回覆:", r.status_code, r.text)
 
     return "OK", 200
 
