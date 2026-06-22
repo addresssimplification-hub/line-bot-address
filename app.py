@@ -2,7 +2,7 @@ from flask import Flask, request
 import requests
 import os
 
-app = Flask(**name**)
+app = Flask(name)
 
 TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 
