@@ -41,36 +41,36 @@ def parse_order(text):
     dropoff = ""
     pax = 1
     remark = ""
+    date = ""
+    time = ""
 
-    pickup_keywords = [
-        "上車地址",
-        "上車",
-        "起點",
-        "搭車",
-        "接送"
-    ]
-
-    dropoff_keywords = [
-        "下車地址",
-        "下車",
-        "終點",
-        "目的地",
-        "送達"
-    ]
-
-    remark_keywords = [
-        "其他備註",
-        "備註"
-    ]
+    pickup_keywords = ["上車地址", "上車", "起點", "搭車", "接送"]
+    dropoff_keywords = ["下車地址", "下車", "終點", "目的地", "送達"]
+    remark_keywords = ["其他備註", "備註"]
 
     for line in text.split("\n"):
 
         line = line.strip()
-
         if not line:
             continue
 
         normalized = line.replace(":", "：")
+
+        # =====================
+        # 日期
+        # =====================
+        if "日期" in normalized:
+            parts = normalized.split("：", 1)
+            if len(parts) > 1:
+                date = parts[1].strip()
+
+        # =====================
+        # 時間
+        # =====================
+        if "時間" in normalized:
+            parts = normalized.split("：", 1)
+            if len(parts) > 1:
+                time = parts[1].strip().replace("預約", "").strip()
 
         # =====================
         # 上車地址
@@ -102,19 +102,16 @@ def parse_order(text):
 
         # =====================
         # 人數
-        # =====================
+        =====================
         if any(k in normalized for k in ["乘坐人數", "搭乘人數", "人數"]):
-
             numbers = re.findall(r"\d+", normalized)
-
             if numbers:
                 pax = int(numbers[0])
 
         # =====================
         # 備註
-        # =====================
+        =====================
         for key in remark_keywords:
-
             if key in normalized:
 
                 if "：" in normalized:
@@ -122,45 +119,45 @@ def parse_order(text):
 
                 break
 
-    # =====================
-    # 沒有上車地址不回覆
-    # =====================
+    # 沒上車地址不回覆
     if not pickup:
         return ""
 
     # =====================
     # 加價規則
-    # =====================
+    =====================
     fee = 0
-
     if pax == 5:
         fee = 100
-
     elif pax == 6:
         fee = 200
 
     # =====================
     # 組輸出
-    # =====================
-    result = f"⬆️{clean(pickup)}"
+    =====================
+    result = ""
+
+    # 日期時間
+    if date or time:
+        result += f"{date} {time}".strip() + "\n"
+
+    result += f"⬆️{clean(pickup)}"
 
     if dropoff:
         result += f"\n下車地址：{clean(dropoff)}"
 
     extra = ""
 
-    # 人數大於4才顯示
+    # 人數 >4 才顯示
     if pax > 4:
         extra += f"({pax})"
-
         if fee > 0:
             extra += f"➕{fee}"
 
-    # 備註有內容才顯示
+    # 備註
     if remark:
         extra += f"✅{remark}"
 
-    # 最後一行統一顯示
     if extra:
         result += f"\n{extra}"
 
@@ -183,7 +180,7 @@ def callback():
 
     body = request.get_json()
 
-    print("收到事件:", body)
+    print("收到:", body)
 
     for event in body.get("events", []):
 
@@ -218,13 +215,11 @@ def callback():
             ]
         }
 
-        r = requests.post(
+        requests.post(
             "https://api.line.me/v2/bot/message/reply",
             headers=headers,
             json=data
         )
-
-        print("LINE回覆:", r.status_code, r.text)
 
     return "OK", 200
 
