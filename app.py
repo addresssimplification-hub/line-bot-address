@@ -9,7 +9,7 @@ TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 
 
 # =====================
-# 健康檢查
+# 基本頁面
 # =====================
 @app.route("/")
 def home():
@@ -17,7 +17,7 @@ def home():
 
 
 # =====================
-# 地址簡化
+# 地址清理
 # =====================
 def clean_address(addr):
     if not addr:
@@ -33,7 +33,7 @@ def clean_address(addr):
 
 
 # =====================
-# 日期處理（當日免填不顯示）
+# 日期處理
 # =====================
 def parse_date(text):
     if not text:
@@ -53,47 +53,43 @@ def parse_date(text):
 
 
 # =====================
-# 時間處理（完全防呆，禁止 00:00）
+# 🔥 修正後時間處理（不會再變 500:00）
 # =====================
 def parse_time(text):
     if not text:
         return ""
 
     text = text.strip()
-    text = text.replace("預約", "").replace("時間", "").replace("：", "").replace(":", "")
+    text = text.replace("預約", "").replace("時間", "").replace("：", "").replace(" ", "")
 
-    if not text:
+    # 抓 上午/下午 + 時間
+    m = re.search(r"(上午|下午)?(\d{1,2})(?:[:：]?(\d{0,2}))?", text)
+
+    if not m:
         return ""
 
-    # 抓 5:00 / 下午5:00 / 上午5
-    m = re.search(r"(上午|下午)?\s*\d{1,2}\s*[：:]?\s*\d{0,2}", text)
+    period = m.group(1) or ""
+    hour = m.group(2)
+    minute = m.group(3)
 
-    if m:
-        t = m.group()
-        t = t.replace(" ", "").replace("：", ":")
+    if not hour:
+        return ""
 
-        # 沒分鐘補 00
-        if ":" not in t:
-            t += ":00"
+    if hour == "0" or hour == "00":
+        return ""
 
-        if t == "00:00":
-            return ""
+    if not minute:
+        minute = "00"
 
-        return t
+    # 避免 5:0
+    if len(minute) == 1:
+        minute = minute + "0"
 
-    # 只有數字（5 → 5:00）
-    m = re.search(r"\d{1,2}", text)
-    if m:
-        num = m.group()
-        if num == "0" or num == "00":
-            return ""
-        return f"{num}:00"
-
-    return ""
+    return f"{period}{int(hour)}:{minute}"
 
 
 # =====================
-# 主解析
+# 解析訊息
 # =====================
 def parse_message(text):
 
@@ -134,7 +130,7 @@ def parse_message(text):
 
     output = []
 
-    # 日期 + 時間（只有有值才顯示）
+    # 日期 + 時間
     dt = " ".join([x for x in [date, time] if x])
     if dt:
         output.append(dt)
@@ -146,7 +142,7 @@ def parse_message(text):
     if dropoff:
         output.append(f"下車地址：{clean_address(dropoff)}")
 
-    # 最下方資訊（人數 >4 + 備註）
+    # 最下方資訊
     bottom = []
 
     if pax > 4:
