@@ -1,10 +1,10 @@
 from flask import Flask, request
 import requests
 import os
+import re
 
 app = Flask(__name__)
 
-# LINE Channel Access Token
 TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 
 
@@ -14,6 +14,8 @@ TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 def clean(addr):
     if not addr:
         return ""
+
+    addr = addr.strip()
 
     for city in ["台北市", "新北市", "桃園市"]:
         if addr.startswith(city):
@@ -26,31 +28,95 @@ def clean(addr):
 # 訂單解析
 # =====================
 def parse_order(text):
+
     pickup = ""
     dropoff = ""
     pax = 1
     remark = ""
 
+    pickup_keywords = [
+        "上車地址",
+        "上車",
+        "起點",
+        "搭車",
+        "接送"
+    ]
+
+    dropoff_keywords = [
+        "下車地址",
+        "下車",
+        "終點",
+        "目的地",
+        "送達"
+    ]
+
+    remark_keywords = [
+        "其他備註",
+        "備註"
+    ]
+
     for line in text.split("\n"):
 
-        line = line.replace(":", "：")
+        line = line.strip()
 
-        if "上車地址" in line:
-            pickup = line.split("：", 1)[1].strip()
+        if not line:
+            continue
 
-        elif "下車地址" in line:
-            dropoff = line.split("：", 1)[1].strip()
+        normalized = line.replace(":", "：")
 
-        elif "乘坐人數" in line:
-            try:
-                pax = int(line.split("：", 1)[1].strip())
-            except:
-                pax = 1
+        # =====================
+        # 上車地址
+        # =====================
+        if not pickup:
+            for key in pickup_keywords:
+                if key in normalized:
 
-        elif "其他備註" in line:
-            remark = line.split("：", 1)[1].strip()
+                    if "：" in normalized:
+                        pickup = normalized.split("：", 1)[1].strip()
+                    else:
+                        pickup = normalized.replace(key, "").strip()
 
-    # 沒有上車地址就不回覆
+                    break
+
+        # =====================
+        # 下車地址
+        # =====================
+        if not dropoff:
+            for key in dropoff_keywords:
+                if key in normalized:
+
+                    if "：" in normalized:
+                        dropoff = normalized.split("：", 1)[1].strip()
+                    else:
+                        dropoff = normalized.replace(key, "").strip()
+
+                    break
+
+        # =====================
+        # 人數
+        # =====================
+        if any(k in normalized for k in ["乘坐人數", "搭乘人數", "人數"]):
+
+            numbers = re.findall(r"\d+", normalized)
+
+            if numbers:
+                pax = int(numbers[0])
+
+        # =====================
+        # 備註
+        # =====================
+        for key in remark_keywords:
+
+            if key in normalized:
+
+                if "：" in normalized:
+                    remark = normalized.split("：", 1)[1].strip()
+
+                break
+
+    # =====================
+    # 沒有上車地址不回覆
+    # =====================
     if not pickup:
         return ""
 
@@ -74,7 +140,6 @@ def parse_order(text):
     if dropoff:
         result += f"\n下車地址：{clean(dropoff)}"
 
-    # 最後一行
     extra = ""
 
     # 人數大於4才顯示
@@ -84,10 +149,11 @@ def parse_order(text):
         if fee > 0:
             extra += f"➕{fee}"
 
-    # 備註
+    # 備註有內容才顯示
     if remark:
         extra += f"✅{remark}"
 
+    # 統一顯示在最後一行
     if extra:
         result += f"\n{extra}"
 
