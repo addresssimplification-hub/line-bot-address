@@ -28,7 +28,7 @@ def clean_address(addr):
 
 
 # =====================
-# 日期處理（今天不顯示）
+# 日期（今天不顯示）
 # =====================
 def format_date(text):
     if not text:
@@ -50,22 +50,51 @@ def format_date(text):
 
 
 # =====================
-# 時間處理（保留上午下午）
+# 🚀 時間解析 V2（已升級）
 # =====================
 def format_time(text):
     if not text:
         return ""
 
     text = text.strip()
-    text = text.replace("預約", "").strip()
 
-    # 保留 上午 / 下午
+    # 去掉干擾字
+    text = text.replace("預約", "")
+    text = text.replace("時間", "")
     text = text.replace("：", "")
-    return text
+    text = text.replace(":", "")
+
+    # =====================
+    # 上午 / 下午 + 時間
+    # =====================
+    match = re.search(r"(上午|下午)\s*\d{1,2}[:點]\d{0,2}", text)
+    if match:
+        t = match.group()
+        t = t.replace("點", ":")
+        t = t.replace(" ", "")
+        if ":" not in t:
+            t += ":00"
+        return t
+
+    # =====================
+    # 24H 5:00 / 17:30
+    # =====================
+    match = re.search(r"\d{1,2}:\d{2}", text)
+    if match:
+        return match.group()
+
+    # =====================
+    # 只有數字（5 → 5:00）
+    # =====================
+    match = re.search(r"\d{1,2}", text)
+    if match:
+        return f"{match.group()}:00"
+
+    return ""
 
 
 # =====================
-# 解析主邏輯
+# 主解析
 # =====================
 def parse_message(text):
 
@@ -110,7 +139,7 @@ def parse_message(text):
         if "備註" in line:
             remark = line.split("：")[-1].strip()
 
-    # 沒上車地址直接不回
+    # 沒上車地址 → 不回覆
     if not pickup:
         return ""
 
@@ -140,7 +169,7 @@ def parse_message(text):
     if dropoff:
         output.append(f"下車地址：{clean_address(dropoff)}")
 
-    # 底部資訊（只有人數>4 or 備註）
+    # 底部資訊（人數 >4 or 備註）
     bottom = []
 
     if pax > 4:
@@ -159,7 +188,7 @@ def parse_message(text):
 
 
 # =====================
-# LINE Webhook
+# LINE webhook
 # =====================
 @app.route("/callback", methods=["POST"])
 def callback():
