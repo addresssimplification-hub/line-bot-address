@@ -10,7 +10,15 @@ TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 
 
 # =====================
-# 地址簡化
+# 健康檢查
+# =====================
+@app.route("/")
+def home():
+    return "OK"
+
+
+# =====================
+# 地址清理
 # =====================
 def clean_address(addr):
     if not addr:
@@ -18,11 +26,9 @@ def clean_address(addr):
 
     addr = addr.strip()
 
-    prefixes = ["台北市", "臺北市", "北市", "新北市", "桃園市"]
-
-    for p in prefixes:
-        if addr.startswith(p):
-            return addr.replace(p, "", 1).strip()
+    for city in ["台北市", "臺北市", "北市", "新北市", "桃園市"]:
+        if addr.startswith(city):
+            return addr.replace(city, "", 1).strip()
 
     return addr
 
@@ -46,49 +52,45 @@ def format_date(text):
 
         return f"{m}/{d}"
 
-    return text.strip()
+    return ""
 
 
 # =====================
-# 🚀 時間解析 V2（已升級）
+# 🚀 時間（穩定版，防 00:00）
 # =====================
 def format_time(text):
     if not text:
         return ""
 
     text = text.strip()
+    text = text.replace("預約", "").replace("時間", "")
+    text = text.replace("：", "").replace(":", "")
 
-    # 去掉干擾字
-    text = text.replace("預約", "")
-    text = text.replace("時間", "")
-    text = text.replace("：", "")
-    text = text.replace(":", "")
-
-    # =====================
     # 上午 / 下午 + 時間
-    # =====================
-    match = re.search(r"(上午|下午)\s*\d{1,2}[:點]\d{0,2}", text)
-    if match:
-        t = match.group()
-        t = t.replace("點", ":")
-        t = t.replace(" ", "")
+    m = re.search(r"(上午|下午)?\s*\d{1,2}\s*[：:]?\s*\d{0,2}", text)
+    if m:
+        t = m.group()
+        t = t.replace(" ", "").replace("點", ":").replace("：", ":")
+
+        # 如果只有小時
         if ":" not in t:
-            t += ":00"
+            t = f"{t}:00"
+
+        # 防呆：避免 00:00
+        if t == "00:00":
+            return ""
+
         return t
 
-    # =====================
-    # 24H 5:00 / 17:30
-    # =====================
-    match = re.search(r"\d{1,2}:\d{2}", text)
-    if match:
-        return match.group()
+    # 只有數字
+    m = re.search(r"\d{1,2}", text)
+    if m:
+        num = m.group()
 
-    # =====================
-    # 只有數字（5 → 5:00）
-    # =====================
-    match = re.search(r"\d{1,2}", text)
-    if match:
-        return f"{match.group()}:00"
+        if num in ["0", "00"]:
+            return ""
+
+        return f"{num}:00"
 
     return ""
 
@@ -139,7 +141,7 @@ def parse_message(text):
         if "備註" in line:
             remark = line.split("：")[-1].strip()
 
-    # 沒上車地址 → 不回覆
+    # 沒上車地址直接不回
     if not pickup:
         return ""
 
@@ -157,7 +159,7 @@ def parse_message(text):
     # =====================
     output = []
 
-    # 日期 + 時間
+    # 日期 + 時間（只顯示有的）
     dt = " ".join([x for x in [date, time] if x])
     if dt:
         output.append(dt)
@@ -169,14 +171,14 @@ def parse_message(text):
     if dropoff:
         output.append(f"下車地址：{clean_address(dropoff)}")
 
-    # 底部資訊（人數 >4 or 備註）
+    # 底部資訊（人數 >4 + 備註）
     bottom = []
 
     if pax > 4:
-        extra = f"({pax})"
+        text = f"({pax})"
         if fee > 0:
-            extra += f"➕{fee}"
-        bottom.append(extra)
+            text += f"➕{fee}"
+        bottom.append(text)
 
     if remark:
         bottom.append(f"✅{remark}")
@@ -237,15 +239,3 @@ def callback():
         )
 
     return "OK", 200
-
-
-# =====================
-# health check
-# =====================
-@app.route("/")
-def home():
-    return "OK"
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
