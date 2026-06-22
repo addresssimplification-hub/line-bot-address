@@ -3,27 +3,29 @@ import os
 
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.models import MessageEvent, TextSendMessage
 
 app = Flask(__name__)
 
-# ===== LINE 金鑰（Render 環境變數）=====
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+# LINE 金鑰（Render 環境變數）
+TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
-line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
-handler = WebhookHandler(LINE_CHANNEL_SECRET)
+line_bot_api = LineBotApi(TOKEN)
+handler = WebhookHandler(SECRET)
 
 
 # ===== 地址簡化 =====
 def clean(addr):
+    if not addr:
+        return ""
     for city in ["台北市", "新北市", "桃園市"]:
         if addr.startswith(city):
             return addr.replace(city, "", 1)
     return addr
 
 
-# ===== 解析內容 =====
+# ===== 解析文字 =====
 def parse(text):
     pickup = ""
     dropoff = ""
@@ -32,38 +34,23 @@ def parse(text):
 
     for line in text.split("\n"):
         if "上車地址" in line:
+            pickup = line.split("：")[-1].strip()
+        elif "下車地址" in line:
+            dropoff = line.split("：")[-1].strip()
+        elif "乘坐人數" in line:
             try:
-                pickup = line.split("：")[1].strip()
-            except:
-                pass
-
-        if "下車地址" in line:
-            try:
-                dropoff = line.split("：")[1].strip()
-            except:
-                pass
-
-        if "乘坐人數" in line:
-            try:
-                pax = int(line.split("：")[1].strip())
+                pax = int(line.split("：")[-1].strip())
             except:
                 pax = 1
+        elif "其他備註" in line:
+            remark = line.split("：")[-1].strip()
 
-        if "其他備註" in line:
-            try:
-                remark = line.split("：")[1].strip()
-            except:
-                pass
-
-    # ===== 加價規則 =====
     fee = (pax - 4) * 100 if pax > 4 else 0
 
-    # ===== 組輸出 =====
     result = f"⬆️{clean(pickup)}\n下車地址：{clean(dropoff)}\n({pax})"
 
     if fee > 0:
         result += f"➕{fee}"
-
     if remark:
         result += f"✅{remark}"
 
@@ -79,7 +66,10 @@ def callback():
     try:
         events = handler.handle(body, signature)
     except InvalidSignatureError:
-        abort(400)
+        return "OK", 200
+
+    if not events:
+        return "OK", 200
 
     for event in events:
         if isinstance(event, MessageEvent):
