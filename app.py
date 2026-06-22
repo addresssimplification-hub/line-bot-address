@@ -33,7 +33,43 @@ def clean_address(addr):
 
 
 # =====================
-# 日期處理
+# 移除標籤，避免重複文字
+# =====================
+def extract_address(text):
+    if not text:
+        return ""
+
+    text = text.strip()
+
+    for k in ["上車", "下車", "⬆️", "⬇️", "：", ":"]:
+        text = text.replace(k, "")
+
+    return text.strip()
+
+
+# =====================
+# 智慧上下車解析
+# =====================
+def smart_parse(lines):
+    pickup = ""
+    dropoff = ""
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        if "上車" in line or "⬆️" in line:
+            pickup = extract_address(line)
+
+        elif "下車" in line or "⬇️" in line:
+            dropoff = extract_address(line)
+
+    return pickup, dropoff
+
+
+# =====================
+# 日期解析
 # =====================
 def parse_date(text):
     if not text:
@@ -51,7 +87,7 @@ def parse_date(text):
 
 
 # =====================
-# 時間處理（含早晚語意）
+# 時間解析（語意）
 # =====================
 def parse_time(text):
     if not text:
@@ -91,47 +127,12 @@ def parse_time(text):
 
 
 # =====================
-# 人數加價規則
+# 人數加價
 # =====================
 def calc_fee(pax):
     if pax <= 4:
         return 0
     return (pax - 4) * 100
-
-
-# =====================
-# 智慧抓上下車
-# =====================
-def smart_parse(lines):
-    pickup = ""
-    dropoff = ""
-    labeled = False
-    addresses = []
-
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-
-        if "⬆️" in line or "上車" in line:
-            pickup = line.split("：")[-1].replace("⬆️", "").strip()
-            labeled = True
-
-        elif "⬇️" in line or "下車" in line:
-            dropoff = line.split("：")[-1].replace("⬇️", "").strip()
-            labeled = True
-
-        elif "地址" not in line and "備註" not in line and "時間" not in line:
-            if "日期" not in line:
-                addresses.append(line)
-
-    if not labeled:
-        if len(addresses) >= 1:
-            pickup = addresses[0]
-        if len(addresses) >= 2:
-            dropoff = addresses[1]
-
-    return pickup, dropoff
 
 
 # =====================
@@ -184,7 +185,7 @@ def parse_message(text):
     # 底部資訊
     bottom = []
 
-    # 人數（>4 才顯示）
+    # 人數加價（>4才顯示）
     if pax > 4:
         bottom.append(f"{pax}人 +{calc_fee(pax)}")
 
