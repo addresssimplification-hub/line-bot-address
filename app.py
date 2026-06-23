@@ -32,13 +32,17 @@ def merge_broken_lines(lines):
     merged = []
     buffer = ""
 
+    # 只把明顯是上一行地址延續的內容接回去
+    # 例如：長安東路53 + 巷1-3號 → 長安東路53巷1-3號
+    # 不會再把第二個完整地址接到第一個地址後面
+    CONTINUE_WORDS = ["巷", "弄", "號", "樓", "F", "f"]
+
     for l in lines:
         l = l.strip()
         if not l:
             continue
 
-        # 如果這一行不是新欄位，視為上一行地址/內容延續
-        if buffer and not re.search(r"(日期|時間|上車|下車|人數|手機|電話|行李|備註|其他備註|💰|價格)", l):
+        if buffer and any(l.startswith(x) for x in CONTINUE_WORDS):
             buffer += l
         else:
             if buffer:
