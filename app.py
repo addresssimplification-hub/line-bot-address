@@ -8,16 +8,12 @@ app = Flask(__name__)
 
 TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 
-# ========= 基本設定 =========
-
 REMOVE_CITIES = ["台北市", "臺北市", "新北市", "桃園市", "北市"]
 
 IGNORE_DATE_WORDS = ["今天", "今日", "當日", "現在", "立即", "馬上", "立刻"]
 IGNORE_TIME_WORDS = ["現在", "立即", "馬上", "立刻"]
 
 IGNORE_REMARKS = ["無", "沒有", "無備註", "不用", "-", "N/A", "n/a", ""]
-
-# ========= 工具 =========
 
 def clean_postcode(addr: str):
     return re.sub(r"^\d{3,5}\s*", "", addr.strip())
@@ -26,6 +22,19 @@ def clean_postcode(addr: str):
 def clean_city(addr: str):
     for c in REMOVE_CITIES:
         addr = addr.replace(c, "")
+    return addr.strip()
+
+
+def clean_address_text(addr):
+    addr = clean_postcode(addr)
+    addr = clean_city(addr)
+
+    addr = re.sub(
+        r'^(地址[:：]?\s*|上車[:：]?\s*|下車[:：]?\s*)',
+        '',
+        addr
+    )
+
     return addr.strip()
 
 
@@ -38,14 +47,11 @@ def format_time(text: str):
     if any(w in t for w in IGNORE_TIME_WORDS):
         return ""
 
-    # 移除「預約」
     t = t.replace("預約", "")
-
-    # AM/PM / 上午下午直接保留
     return t.strip()
 
 
-def format_date(text: str):
+def format_date(text):
     if not text:
         return ""
 
@@ -54,11 +60,26 @@ def format_date(text: str):
     if any(w in t for w in IGNORE_DATE_WORDS):
         return ""
 
-    today = datetime.now().strftime("%m/%d")
+    now = datetime.now()
 
-    # 如果剛好是今天
-    if t == today:
-        return ""
+    # 23 / 23號
+    m = re.match(r"^(\d{1,2})號?$", t)
+    if m:
+        day = int(m.group(1))
+        if day == now.day:
+            return ""
+        return f"{now.month}/{day}"
+
+    # 6/29
+    m = re.match(r"^(\d{1,2})/(\d{1,2})$", t)
+    if m:
+        month = int(m.group(1))
+        day = int(m.group(2))
+
+        if month == now.month and day == now.day:
+            return ""
+
+        return f"{month}/{day}"
 
     return t
 
@@ -82,15 +103,21 @@ def parse_people(num_text: str, remark_lines):
 
 def extract_remarks(lines, start_idx):
     remarks = []
+
     for i in range(start_idx, len(lines)):
         t = lines[i].strip()
+
         if not t:
             continue
+
         if any(x in t for x in ["電話", "手機", "上車", "下車", "日期", "時間", "人數"]):
             break
+
         if t in IGNORE_REMARKS:
             continue
+
         remarks.append(t)
+
     return remarks
 
 
@@ -104,46 +131,45 @@ def extract_addresses(lines):
         if not l:
             continue
 
-        # 上車
         if "上車" in l or "⬆️" in l:
             l = l.replace("上車地址：", "").replace("上車：", "").replace("⬆️", "")
-            l = clean_postcode(clean_city(l))
+            l = clean_address_text(l)
             if l:
                 pickups.append(l)
 
-        # 下車
         elif "下車" in l or "⬇️" in l:
             l = l.replace("下車地址：", "").replace("下車：", "").replace("⬇️", "")
-            l = clean_postcode(clean_city(l))
+            l = clean_address_text(l)
             if l:
                 dropoffs.append(l)
+
 
     return pickups, dropoffs
 
 
 def fallback_addresses(lines):
-    """沒有標籤時用 fallback（兩段式）"""
     addrs = []
 
     for l in lines:
         l = l.strip()
+
         if not l:
             continue
+
         if any(x in l for x in ["日期", "時間", "人數", "備註", "電話", "手機"]):
             continue
+
         if "http" in l:
             continue
-        addrs.append(clean_postcode(clean_city(l)))
+
+        addrs.append(clean_address_text(l))
 
     if len(addrs) >= 2:
         return [addrs[0]], addrs[1:]
 
     return addrs, []
-
-
-# ========= LINE =========
-
-@app.route("/")
+    
+    @app.route("/")
 def home():
     return "OK"
 
@@ -151,8 +177,6 @@ def home():
 @app.route("/callback", methods=["POST"])
 def callback():
     body = request.get_json()
-
-    print("BODY =", body)
 
     for event in body.get("events", []):
 
@@ -174,7 +198,6 @@ def callback():
 
         pickups, dropoffs = extract_addresses(lines)
 
-        # fallback（沒標籤）
         if not pickups and not dropoffs:
             pickups, dropoffs = fallback_addresses(lines)
 
@@ -191,9 +214,19 @@ def callback():
                 people = l.split("：")[-1]
 
             elif "備註" in l:
-                remark_lines = extract_remarks(lines, i + 1)
 
-        # ========= 組輸出 =========
+                same_line = ""
+
+                if "：" in l:
+                    same_line = l.split("：", 1)[1].strip()
+
+                remark_lines = []
+
+                if same_line and same_line not in IGNORE_REMARKS:
+                    remark_lines.append(same_line)
+
+                remark_lines.extend(extract_remarks(lines, i + 1))
+
 
         output = []
 
@@ -231,16 +264,10 @@ def callback():
             ]
         }
 
-        r = requests.post(
+        requests.post(
             "https://api.line.me/v2/bot/message/reply",
             headers=headers,
             json=data
         )
 
-        print("LINE API:", r.status_code, r.text)
-
     return "OK", 200
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
