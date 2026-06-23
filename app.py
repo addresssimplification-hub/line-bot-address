@@ -21,19 +21,16 @@ def home():
 def ping():
     return "alive"
 
-
 # ======================
 # CONFIG
 # ======================
 
 REMOVE_CITIES = ["台北市", "臺北市", "新北市", "桃園市", "北市"]
 
-IGNORE_DATE_WORDS = ["今天", "今日", "當日", "現在", "立即", "馬上", "立刻"]
 IGNORE_TIME_WORDS = ["現在", "立即", "馬上", "立刻"]
 
-
 # ======================
-# CLEAN
+# CLEAN ADDRESS
 # ======================
 
 def clean_address(addr):
@@ -42,7 +39,6 @@ def clean_address(addr):
         addr = addr.replace(c, "")
     addr = re.sub(r'^(上車|下車|地址|第二|第三)?[:：]?', '', addr)
     return addr.strip()
-
 
 # ======================
 # TIME
@@ -56,8 +52,6 @@ def format_time(text):
 
     if any(w in t for w in IGNORE_TIME_WORDS):
         return ""
-
-    t = t.replace("預約", "").strip()
 
     m = re.match(r"^(\d{3,4})\s*(am|pm)?$", t)
     if m:
@@ -79,88 +73,8 @@ def format_time(text):
 
     return t
 
-
 # ======================
-# DATE
-# ======================
-
-def format_date(text):
-    if not text:
-        return ""
-
-    t = text.strip()
-    now = datetime.now()
-
-    if any(w in t for w in IGNORE_DATE_WORDS):
-        return ""
-
-    m = re.match(r"^(\d{1,2})/(\d{1,2})$", t)
-    if m:
-        mo, d = int(m.group(1)), int(m.group(2))
-        if mo == now.month and d == now.day:
-            return ""
-        return f"{mo}/{d}"
-
-    m = re.match(r"^(\d{1,2})號?$", t)
-    if m:
-        d = int(m.group(1))
-        if d == now.day:
-            return ""
-        return f"{now.month}/{d}"
-
-    return t
-
-
-# ======================
-# PEOPLE
-# ======================
-
-def parse_people(n):
-    try:
-        n = int(n)
-    except:
-        return ""
-
-    if n <= 4:
-        return ""
-
-    fee = (n - 4) * 100
-    return f"{n}人 +{fee}"
-
-
-# ======================
-# PRICE
-# ======================
-
-def extract_price(text):
-    if not text:
-        return ""
-
-    m = re.search(r"(?:💰|\$|價格)?\s*(\d{3,6})", text)
-    if m:
-        return f"💰{m.group(1)}"
-
-    return ""
-
-
-# ======================
-# REMARK
-# ======================
-
-def extract_remarks(lines):
-    r = []
-    for l in lines:
-        l = l.strip()
-        if not l:
-            continue
-        if any(x in l for x in ["電話", "手機", "上車", "下車", "日期", "時間", "人數", "💰"]):
-            continue
-        r.append(l)
-    return r
-
-
-# ======================
-# ADDRESSES
+# ADDRESS
 # ======================
 
 def extract_addresses(lines):
@@ -186,14 +100,14 @@ def extract_addresses(lines):
 
     return ups, downs
 
-
+# fallback
 def fallback(lines):
     a = []
     for l in lines:
         l = l.strip()
         if not l:
             continue
-        if any(x in l for x in ["日期", "時間", "人數", "備註", "電話", "手機"]):
+        if any(x in l for x in ["日期", "時間", "人數", "備註", "電話", "手機", "💰"]):
             continue
         a.append(clean_address(l))
 
@@ -202,9 +116,45 @@ def fallback(lines):
 
     return a, []
 
+# ======================
+# CLEAN REMARKS (重點修正)
+# ======================
+
+def extract_remarks(lines):
+    bad_words = [
+        "電話", "手機", "上車", "下車", "日期", "時間", "人數", "💰",
+        "麻煩填寫", "麻煩提供", "正確電話", "完整地址"
+    ]
+
+    r = []
+    for l in lines:
+        l = l.strip()
+        if not l:
+            continue
+
+        if any(x in l for x in bad_words):
+            continue
+
+        r.append(l)
+
+    return r
 
 # ======================
-# CALLBACK (NO DIE)
+# PRICE
+# ======================
+
+def extract_price(text):
+    if not text:
+        return ""
+
+    m = re.search(r"(?:💰|\$)?\s*(\d{3,6})", text)
+    if m:
+        return f"💰{m.group(1)}"
+
+    return ""
+
+# ======================
+# CALLBACK
 # ======================
 
 @app.route("/callback", methods=["POST"])
@@ -225,9 +175,7 @@ def callback():
                 lines = text.split("\n")
                 reply_token = event.get("replyToken")
 
-                date = ""
                 time = ""
-                people = ""
                 price = ""
 
                 ups, downs = extract_addresses(lines)
@@ -240,14 +188,8 @@ def callback():
                 for i, l in enumerate(lines):
                     s = l.strip()
 
-                    if "日期" in s:
-                        date = format_date(s.split("：")[-1])
-
-                    elif "時間" in s:
+                    if "時間" in s:
                         time = format_time(s.split("：")[-1])
-
-                    elif "人數" in s:
-                        people = s.split("：")[-1]
 
                     elif "💰" in s or "價格" in s:
                         price = extract_price(s)
@@ -255,13 +197,12 @@ def callback():
                     elif "備註" in s:
                         remarks = extract_remarks(lines[i+1:])
 
+                # ======================
+                # OUTPUT (你要的格式)
+                # ======================
                 output = []
 
-                if date and time:
-                    output.append(f"{date} {time}")
-                elif date:
-                    output.append(date)
-                elif time:
+                if time:
                     output.append(time)
 
                 for u in ups:
@@ -270,18 +211,15 @@ def callback():
                 for d in downs:
                     output.append(f"下車地址：{d}")
 
-                ptxt = parse_people(people)
-                if ptxt:
-                    output.append(ptxt)
-
                 if remarks:
-                    output.append("｜✅" + " ".join(remarks))
+                    output.append("✅" + " ".join(remarks))
 
                 if price:
                     output.append(price)
 
                 final = "\n".join(output) or "無內容"
 
+                # reply LINE
                 try:
                     requests.post(
                         "https://api.line.me/v2/bot/message/reply",
@@ -308,10 +246,6 @@ def callback():
         print(traceback.format_exc())
         return "OK", 200
 
-
-# ======================
-# START SAFE
-# ======================
 
 if __name__ == "__main__":
     app.run(
