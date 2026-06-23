@@ -20,7 +20,8 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 def is_booking_text(text):
     keywords = [
-        "上車", "下車", "日期", "時間", "人數", "乘坐人數",
+        "上車", "下車", "上車地", "下車地", "上：", "下：",
+        "日期", "時間", "人數", "乘坐人數",
         "機場", "桃機", "航廈", "悠遊GO", "預約",
         "💰", "$", "＄", "固定"
     ]
@@ -31,7 +32,7 @@ def clean_line(line):
     line = line.strip()
     line = re.sub(r"^[\s\-—–_]+", "", line)
     line = re.sub(
-        r"^(日期|時間|上車地址|下車地址|上車|下車|第二上車|第三上車|第二下車|第三下車|地址)\s*[:：]?\s*",
+        r"^(日期|時間|第二上車|第三上車|第二下車|第三下車|上車地址|下車地址|上車地|下車地|上車|下車|上|下|地址)\s*[:：]?\s*",
         "",
         line
     )
@@ -79,6 +80,7 @@ def parse_time(text):
     if re.search(r"時間\s*[:：]?\s*(現在|立即|馬上|立刻)", text):
         return ""
 
+    # 早上5:30 / 下午6:30 / 晚上9:05
     m = re.search(
         r"時間\s*[:：]?\s*(早上|上午|下午|晚上|中午|凌晨)?\s*(\d{1,2})\s*[:：]\s*(\d{2})",
         text,
@@ -88,16 +90,21 @@ def parse_time(text):
         period = m.group(1) or ""
         hour = int(m.group(2))
         minute = int(m.group(3))
+        return convert_time(period, hour, minute)
 
-        if period in ["下午", "晚上"] and hour < 12:
-            hour += 12
-        elif period == "中午" and hour < 12:
-            hour += 12
-        elif period == "凌晨" and hour == 12:
-            hour = 0
+    # 晚上8點 / 下午3點 / 早上5點
+    m = re.search(
+        r"時間\s*[:：]?\s*(早上|上午|下午|晚上|中午|凌晨)?\s*(\d{1,2})\s*點",
+        text,
+        re.I
+    )
+    if m:
+        period = m.group(1) or ""
+        hour = int(m.group(2))
+        minute = 0
+        return convert_time(period, hour, minute)
 
-        return f"{hour:02d}:{minute:02d}"
-
+    # 0600pm / 0530am
     m = re.search(r"時間\s*[:：]?\s*(\d{1,2})(\d{2})\s*(am|pm|AM|PM)", text)
     if m:
         hour = int(m.group(1))
@@ -111,6 +118,7 @@ def parse_time(text):
 
         return f"{hour:02d}:{minute:02d}"
 
+    # 0500 / 1830
     m = re.search(r"時間\s*[:：]?\s*(\d{1,2})(\d{2})", text)
     if m:
         hour = int(m.group(1))
@@ -119,6 +127,17 @@ def parse_time(text):
             return f"{hour:02d}:{minute:02d}"
 
     return ""
+
+
+def convert_time(period, hour, minute):
+    if period in ["下午", "晚上"] and hour < 12:
+        hour += 12
+    elif period == "中午" and hour < 12:
+        hour += 12
+    elif period == "凌晨" and hour == 12:
+        hour = 0
+
+    return f"{hour:02d}:{minute:02d}"
 
 
 def parse_price(text):
@@ -199,23 +218,33 @@ def parse_addresses(text):
     lines = [l.strip() for l in text.splitlines() if l.strip()]
 
     for line in lines:
-        if re.match(r"^上車\s*[:：]", line) or re.match(r"^上車地址\s*[:：]", line):
-            addr = clean_address(clean_line(line))
+        # 上車格式：
+        # 上車地址：xxx / 上車地址 xxx / 上車地址xxx
+        # 上車地：xxx / 上車地 xxx / 上車地xxx
+        # 上車：xxx / 上車 xxx / 上車xxx
+        # 上：xxx / 上 xxx / 上xxx
+        if re.match(r"^(第二上車|第三上車|上車地址|上車地|上車|上)\s*[:：]?\s*", line):
+            addr = re.sub(
+                r"^(第二上車|第三上車|上車地址|上車地|上車|上)\s*[:：]?\s*",
+                "",
+                line
+            ).strip()
+            addr = clean_address(addr)
             if addr:
                 pickups.append(addr)
 
-        elif re.match(r"^(第二上車|第三上車)\s*[:：]?", line):
-            addr = clean_address(clean_line(line))
-            if addr:
-                pickups.append(addr)
-
-        elif re.match(r"^下車\s*[:：]", line) or re.match(r"^下車地址\s*[:：]", line):
-            addr = clean_address(clean_line(line))
-            if addr:
-                dropoffs.append(addr)
-
-        elif re.match(r"^(第二下車|第三下車)\s*[:：]?", line):
-            addr = clean_address(clean_line(line))
+        # 下車格式：
+        # 下車地址：xxx / 下車地址 xxx / 下車地址xxx
+        # 下車地：xxx / 下車地 xxx / 下車地xxx
+        # 下車：xxx / 下車 xxx / 下車xxx
+        # 下：xxx / 下 xxx / 下xxx
+        elif re.match(r"^(第二下車|第三下車|下車地址|下車地|下車|下)\s*[:：]?\s*", line):
+            addr = re.sub(
+                r"^(第二下車|第三下車|下車地址|下車地|下車|下)\s*[:：]?\s*",
+                "",
+                line
+            ).strip()
+            addr = clean_address(addr)
             if addr:
                 dropoffs.append(addr)
 
