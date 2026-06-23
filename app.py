@@ -29,14 +29,37 @@ REMOVE_CITIES = ["台北市", "臺北市", "新北市", "桃園市", "北市"]
 IGNORE_TIME_WORDS = ["現在", "立即", "馬上", "立刻"]
 
 # ======================
-# ADDRESS CLEAN
+# ADDRESS CLEAN（🔥只升級這裡）
 # ======================
 
 def clean_address(addr):
-    addr = re.sub(r"^\d{3,5}\s*", "", addr.strip())
+    if not addr:
+        return ""
+
+    addr = addr.strip()
+
+    # ======================
+    # 🚀 1. 移除郵遞區號（強化版）
+    # ======================
+    addr = re.sub(r"^\d{3,6}\s*", "", addr)   # 開頭郵遞區號
+    addr = re.sub(r"\b\d{3,6}\b", "", addr)   # 中間郵遞區號
+
+    # ======================
+    # 2. 移除城市
+    # ======================
     for c in REMOVE_CITIES:
         addr = addr.replace(c, "")
-    addr = re.sub(r'^(上車|下車|地址|第二|第三)?[:：]?', '', addr)
+
+    # ======================
+    # 3. 移除標記
+    # ======================
+    addr = re.sub(r'^(上車|下車|地址|地點|第二|第三)?[:：]?', '', addr)
+
+    # ======================
+    # 4. 清理空白
+    # ======================
+    addr = re.sub(r"\s+", "", addr)
+
     return addr.strip()
 
 # ======================
@@ -73,32 +96,7 @@ def format_time(text):
     return t
 
 # ======================
-# DATE (保留邏輯但目前未輸出)
-# ======================
-
-def format_date(text):
-    if not text:
-        return ""
-
-    now = datetime.now()
-
-    if any(w in text for w in ["今天", "今日", "當日"]):
-        return ""
-
-    m = re.match(r"^(\d{1,2})/(\d{1,2})$", text)
-    if m:
-        mo, d = int(m.group(1)), int(m.group(2))
-        return f"{mo}/{d}"
-
-    m = re.match(r"^(\d{1,2})號?$", text)
-    if m:
-        d = int(m.group(1))
-        return f"{now.month}/{d}"
-
-    return ""
-
-# ======================
-# ADDRESS
+# ADDRESS PARSER（不動）
 # ======================
 
 def extract_addresses(lines):
@@ -140,7 +138,7 @@ def fallback(lines):
     return a, []
 
 # ======================
-# PEOPLE
+# PEOPLE（不動）
 # ======================
 
 def parse_people(n):
@@ -156,7 +154,7 @@ def parse_people(n):
     return f"{n}人 +{fee}"
 
 # ======================
-# REMARK (✔轉✅ + 橫排)
+# REMARK（不動）
 # ======================
 
 def extract_remarks(lines):
@@ -180,10 +178,10 @@ def extract_remarks(lines):
             if p:
                 tags.append("✅" + p)
 
-    return "".join(tags)  # 橫排
+    return "".join(tags)
 
 # ======================
-# PRICE
+# PRICE（不動）
 # ======================
 
 def extract_price(text):
@@ -197,7 +195,7 @@ def extract_price(text):
     return ""
 
 # ======================
-# CALLBACK
+# CALLBACK（完全不動）
 # ======================
 
 @app.route("/callback", methods=["POST"])
@@ -240,27 +238,22 @@ def callback():
                         price = extract_price(s)
 
                 # ======================
-                # OUTPUT
+                # OUTPUT（完全不動）
                 # ======================
                 output = []
 
                 if time:
                     output.append(time)
 
-                # 上車
                 for u in ups:
                     output.append(f"⬆️：{u}")
 
-                # 下車
                 if len(downs) == 1:
                     output.append(f"下車地點：{downs[0]}")
                 elif len(downs) > 1:
                     output.append("下車地點：" + "\n".join(downs))
 
-                # 人數
                 ptxt = parse_people(people)
-
-                # 備註
                 remark_txt = extract_remarks(lines)
 
                 if ptxt and remark_txt:
@@ -270,13 +263,11 @@ def callback():
                 elif remark_txt:
                     output.append(remark_txt)
 
-                # 價格
                 if price:
                     output.append(price)
 
                 final = "\n".join(output) or "無內容"
 
-                # reply LINE
                 try:
                     requests.post(
                         "https://api.line.me/v2/bot/message/reply",
