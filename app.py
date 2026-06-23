@@ -15,7 +15,7 @@ TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 
 REMOVE_CITIES = ["台北市", "臺北市", "新北市", "桃園市", "北市"]
 IGNORE_TIME_WORDS = ["現在", "立即", "馬上", "立刻"]
-IGNORE_DATE_WORDS = ["今天", "今日", "當日", "現在", "立即", "馬上", "立刻"]
+IGNORE_DATE_WORDS = ["今天", "今日", "當日"]
 
 # ======================
 # CLEAN ADDRESS
@@ -27,13 +27,18 @@ def clean_address(addr):
 
     addr = addr.strip()
 
+    # 移除郵遞區號
     addr = re.sub(r"^\d{3,6}\s*", "", addr)
     addr = re.sub(r"\b\d{3,6}\b", "", addr)
 
+    # 移除城市
     for c in REMOVE_CITIES:
         addr = addr.replace(c, "")
 
+    # 移除標籤
     addr = re.sub(r'^(上車|下車|地址|地點|第二|第三)?[:：]?', '', addr)
+
+    # 清理空白
     addr = re.sub(r"\s+", "", addr)
 
     return addr.strip()
@@ -102,7 +107,7 @@ def format_date(text):
     return t
 
 # ======================
-# ADDRESSES
+# ADDRESS PARSER
 # ======================
 
 def extract_addresses(lines):
@@ -128,15 +133,21 @@ def extract_addresses(lines):
 
     return ups, downs
 
+# fallback（已安全化）
 def fallback(lines):
     a = []
+
     for l in lines:
         l = l.strip()
         if not l:
             continue
+
         if any(x in l for x in ["日期", "時間", "人數", "手機", "電話", "💰"]):
             continue
-        a.append(clean_address(l))
+
+        cleaned = clean_address(l)
+        if cleaned:
+            a.append(cleaned)
 
     if len(a) >= 2:
         return [a[0]], a[1:]
@@ -159,7 +170,7 @@ def parse_people(n):
     return f"{n}人 +{(n-4)*100}"
 
 # ======================
-# REMARKS（完全乾淨版）
+# REMARKS
 # ======================
 
 def extract_remarks(lines):
@@ -252,16 +263,15 @@ def callback():
                         price = extract_price(s)
 
                 # ======================
-                # OUTPUT（你要的格式）
+                # OUTPUT（最終格式）
                 # ======================
                 output = []
 
-                if date:
-                    output.append(date)
+                # 日期+時間合併
+                if date or time:
+                    output.append(f"{date} {time}".strip())
 
-                if time:
-                    output.append(time)
-
+                # 上車
                 for u in ups:
                     output.append(f"⬆️：{u}")
 
@@ -273,18 +283,21 @@ def callback():
                     for d in downs[1:]:
                         output.append(f"🔽{clean_address(d)}")
 
+                # 人數
                 ptxt = parse_people(people)
+
+                # 備註
                 remark_txt = extract_remarks(lines)
 
-                # 🔥 關鍵：分行輸出
                 if ptxt and remark_txt:
-                    output.append(ptxt + "｜")
+                    output.append(f"{ptxt}｜")
                     output.append(remark_txt)
                 elif ptxt:
-                    output.append(ptxt)
+                    output.append(f"{ptxt}｜")
                 elif remark_txt:
                     output.append(remark_txt)
 
+                # 價格
                 if price:
                     output.append(price)
 
