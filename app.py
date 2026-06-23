@@ -9,6 +9,7 @@ app = Flask(__name__)
 
 TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 
+
 # ======================
 # HEALTH CHECK
 # ======================
@@ -24,8 +25,6 @@ def ping():
 # ======================
 # CONFIG
 # ======================
-REMOVE_CITIES = ["台北市", "臺北市", "新北市", "桃園市", "北市"]
-
 IGNORE_DATE_WORDS = ["今天", "今日", "當日", "現在", "立即", "馬上", "立刻"]
 IGNORE_TIME_WORDS = ["現在", "立即", "馬上", "立刻"]
 
@@ -38,10 +37,6 @@ def clean_address(addr):
         return ""
 
     addr = re.sub(r"^\d{3,5}\s*", "", addr.strip())
-
-    for c in REMOVE_CITIES:
-        addr = addr.replace(c, "")
-
     addr = re.sub(r'^(上車|下車|地址|第一|第二|第三|第四|第五)?[:：]?', '', addr)
 
     return addr.strip()
@@ -59,45 +54,18 @@ def format_time(text):
     if any(w in t for w in IGNORE_TIME_WORDS):
         return ""
 
-    t = t.replace("預約", "").strip()
-
-    m = re.search(r"下午\s*(\d{1,2})", t)
+    m = re.search(r"(\d{1,2}):?(\d{0,2})\s*(am|pm)?", t.lower())
     if m:
-        return f"{int(m.group(1)) + 12:02d}:00"
-
-    m = re.search(r"晚上\s*(\d{1,2})", t)
-    if m:
-        return f"{int(m.group(1)) + 12:02d}:00"
-
-    m = re.search(r"傍晚\s*(\d{1,2})", t)
-    if m:
-        return f"{int(m.group(1)) + 12:02d}:00"
-
-    m = re.search(r"早上|上午\s*(\d{1,2})", t)
-    if m:
-        return f"{int(m.group(1)):02d}:00"
-
-    m = re.search(r"凌晨\s*(\d{1,2})", t)
-    if m:
-        return f"{int(m.group(1)):02d}:00"
-
-    m = re.match(r"^(\d{3,4})\s*(am|pm)?$", t.lower())
-    if m:
-        num = m.group(1)
-        ap = m.group(2)
-
-        if len(num) == 3:
-            num = "0" + num
-
-        h = int(num[:2])
-        mi = num[2:]
+        h = int(m.group(1))
+        mi = m.group(2) if m.group(2) else "00"
+        ap = m.group(3)
 
         if ap == "pm" and h < 12:
             h += 12
         if ap == "am" and h == 12:
             h = 0
 
-        return f"{h:02d}:{mi}"
+        return f"{h:02d}:{int(mi):02d}"
 
     return t
 
@@ -117,17 +85,11 @@ def format_date(text):
 
     m = re.match(r"^(\d{1,2})/(\d{1,2})$", t)
     if m:
-        mo, d = int(m.group(1)), int(m.group(2))
-        if mo == now.month and d == now.day:
-            return ""
-        return f"{mo}/{d}"
+        return f"{m.group(1)}/{m.group(2)}"
 
     m = re.match(r"^(\d{1,2})號?$", t)
     if m:
-        d = int(m.group(1))
-        if d == now.day:
-            return ""
-        return f"{now.month}/{d}"
+        return f"{now.month}/{m.group(1)}"
 
     return t
 
@@ -142,10 +104,10 @@ def parse_people(n):
         return ""
 
     if n <= 4:
-        return ""
+        return f"{n}人"
 
     fee = (n - 4) * 100
-    return f"{n}人 +{fee}"
+    return f"{n}人（+{fee}）"
 
 
 # ======================
@@ -163,25 +125,7 @@ def extract_price(text):
 
 
 # ======================
-# REMARKS
-# ======================
-def extract_remarks(lines):
-    r = []
-    for l in lines:
-        l = l.strip()
-        if not l:
-            continue
-
-        if any(x in l for x in ["電話", "手機", "上車", "下車", "日期", "時間", "人數", "💰"]):
-            continue
-
-        r.append(l)
-
-    return r
-
-
-# ======================
-# 🚀 AUTO SORT ADDRESSES
+# ADDRESSES (AUTO SORT)
 # ======================
 def extract_addresses(lines):
     up_map = {}
@@ -213,10 +157,7 @@ def extract_addresses(lines):
             addr = clean_address(addr)
 
             if addr:
-                if num:
-                    up_map[num] = addr
-                else:
-                    up_map[len(up_map) + 1] = addr
+                up_map[num if num else len(up_map)+1] = addr
 
         # ========= 下車 =========
         elif "下車" in s:
@@ -231,33 +172,12 @@ def extract_addresses(lines):
             addr = clean_address(addr)
 
             if addr:
-                if num:
-                    down_map[num] = addr
-                else:
-                    down_map[len(down_map) + 1] = addr
+                down_map[num if num else len(down_map)+1] = addr
 
     ups = [up_map[k] for k in sorted(up_map.keys())]
     downs = [down_map[k] for k in sorted(down_map.keys())]
 
     return ups, downs
-
-
-def fallback(lines):
-    a = []
-    for l in lines:
-        l = l.strip()
-        if not l:
-            continue
-
-        if any(x in l for x in ["日期", "時間", "人數", "備註", "電話", "手機"]):
-            continue
-
-        a.append(clean_address(l))
-
-    if len(a) >= 2:
-        return [a[0]], a[1:]
-
-    return a, []
 
 
 # ======================
@@ -286,11 +206,9 @@ def callback():
                 people = ""
                 price = ""
                 remarks = []
+                is_nosmoke = False
 
                 ups, downs = extract_addresses(lines)
-
-                if not ups and not downs:
-                    ups, downs = fallback(lines)
 
                 for s in lines:
                     s = s.strip()
@@ -311,12 +229,19 @@ def callback():
                         price = f"💰{s}"
 
                     elif "備註" in s:
-                        remark = s.replace("備註：", "").replace("備註:", "").strip()
-                        if remark and remark not in ["無", "沒有", "無備註"]:
-                            remarks.append(remark)
+                        r = s.replace("備註：", "").replace("備註:", "").strip()
+                        if r:
+                            if "禁煙" in r:
+                                is_nosmoke = True
+                            else:
+                                remarks.append(r)
 
-                remarks.extend(extract_remarks(lines))
+                    if "禁煙" in s:
+                        is_nosmoke = True
 
+                # ======================
+                # OUTPUT BUILD
+                # ======================
                 output = []
 
                 if date and time:
@@ -326,23 +251,35 @@ def callback():
                 elif time:
                     output.append(time)
 
-                for i, u in enumerate(ups, 1):
-                    output.append(f"⬆️上車{i}：{u}")
+                output.append("")
 
-                for i, d in enumerate(downs, 1):
-                    output.append(f"⬇️下車{i}：{d}")
+                for u in ups:
+                    output.append(f"⬆️上車：{u}")
 
-                ptxt = parse_people(people)
-                if ptxt:
-                    output.append(ptxt)
+                for d in downs:
+                    output.append(f"⬇️下車：{d}")
+
+                output.append("")
+
+                ppl = parse_people(people)
+
+                people_line = []
+                if ppl:
+                    people_line.append(ppl)
+                if is_nosmoke:
+                    people_line.append("✅ 禁煙")
+
+                if people_line:
+                    output.append("👥 " + " ｜ ".join(people_line))
 
                 if remarks:
-                    output.append("｜✅ " + " ".join(remarks))
+                    output.append("｜" + " ".join(remarks))
 
                 if price:
+                    output.append("")
                     output.append(price)
 
-                final = "\n".join(output) or "無內容"
+                final = "\n".join(output).strip() or "無內容"
 
                 requests.post(
                     "https://api.line.me/v2/bot/message/reply",
