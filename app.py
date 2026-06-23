@@ -10,26 +10,15 @@ app = Flask(__name__)
 TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 
 # ======================
-# HEALTH CHECK
-# ======================
-
-@app.route("/")
-def home():
-    return "OK"
-
-@app.route("/ping")
-def ping():
-    return "alive"
-
-# ======================
 # CONFIG
 # ======================
 
 REMOVE_CITIES = ["台北市", "臺北市", "新北市", "桃園市", "北市"]
 IGNORE_TIME_WORDS = ["現在", "立即", "馬上", "立刻"]
+IGNORE_DATE_WORDS = ["今天", "今日", "當日", "現在", "立即", "馬上", "立刻"]
 
 # ======================
-# ADDRESS CLEAN
+# CLEAN ADDRESS
 # ======================
 
 def clean_address(addr):
@@ -38,18 +27,13 @@ def clean_address(addr):
 
     addr = addr.strip()
 
-    # 🚀 移除郵遞區號
     addr = re.sub(r"^\d{3,6}\s*", "", addr)
     addr = re.sub(r"\b\d{3,6}\b", "", addr)
 
-    # 移除城市
     for c in REMOVE_CITIES:
         addr = addr.replace(c, "")
 
-    # 移除標記
     addr = re.sub(r'^(上車|下車|地址|地點|第二|第三)?[:：]?', '', addr)
-
-    # 清理空白
     addr = re.sub(r"\s+", "", addr)
 
     return addr.strip()
@@ -88,7 +72,37 @@ def format_time(text):
     return t
 
 # ======================
-# ADDRESS PARSER
+# DATE
+# ======================
+
+def format_date(text):
+    if not text:
+        return ""
+
+    t = text.strip()
+    now = datetime.now()
+
+    if any(w in t for w in IGNORE_DATE_WORDS):
+        return ""
+
+    m = re.match(r"^(\d{1,2})/(\d{1,2})$", t)
+    if m:
+        mo, d = int(m.group(1)), int(m.group(2))
+        if mo == now.month and d == now.day:
+            return ""
+        return f"{mo}/{d}"
+
+    m = re.match(r"^(\d{1,2})號?$", t)
+    if m:
+        d = int(m.group(1))
+        if d == now.day:
+            return ""
+        return f"{now.month}/{d}"
+
+    return t
+
+# ======================
+# ADDRESSES
 # ======================
 
 def extract_addresses(lines):
@@ -142,17 +156,17 @@ def parse_people(n):
     if n <= 4:
         return ""
 
-    fee = (n - 4) * 100
-    return f"{n}人 +{fee}"
+    return f"{n}人 +{(n-4)*100}"
 
 # ======================
-# 🔥 備註升級（你要的功能）
+# REMARKS（已修正不污染）
 # ======================
 
 def extract_remarks(lines):
     bad_words = [
         "電話", "手機", "麻煩", "填寫", "提供", "完整", "正確",
-        "日期", "時間", "人數", "💰", "地址"
+        "日期", "時間", "人數", "💰", "地址",
+        "上車", "下車", "行李", "乘坐", "第二", "第三"
     ]
 
     tags = []
@@ -172,11 +186,7 @@ def extract_remarks(lines):
             if not p:
                 continue
 
-            # 🚀 核心新增：統一加 ✅
-            if not p.startswith("✅"):
-                p = "✅" + p
-
-            tags.append(p)
+            tags.append("✅" + p)
 
     return "".join(tags)
 
@@ -216,6 +226,7 @@ def callback():
                 lines = text.split("\n")
                 reply_token = event.get("replyToken")
 
+                date = ""
                 time = ""
                 people = ""
                 price = ""
@@ -228,7 +239,10 @@ def callback():
                 for l in lines:
                     s = l.strip()
 
-                    if "時間" in s:
+                    if "日期" in s:
+                        date = format_date(s.split("：")[-1])
+
+                    elif "時間" in s:
                         time = format_time(s.split("：")[-1])
 
                     elif "人數" in s:
@@ -242,16 +256,22 @@ def callback():
                 # ======================
                 output = []
 
+                if date:
+                    output.append(date)
+
                 if time:
                     output.append(time)
 
                 for u in ups:
                     output.append(f"⬆️：{u}")
 
+                # 🔥 多下車格式修正
                 if len(downs) == 1:
                     output.append(f"下車地點：{downs[0]}")
                 elif len(downs) > 1:
-                    output.append("下車地點：" + "\n".join(downs))
+                    output.append(f"下車地點：{downs[0]}")
+                    for d in downs[1:]:
+                        output.append(f"🔽{d}")
 
                 ptxt = parse_people(people)
                 remark_txt = extract_remarks(lines)
@@ -268,21 +288,18 @@ def callback():
 
                 final = "\n".join(output) or "無內容"
 
-                try:
-                    requests.post(
-                        "https://api.line.me/v2/bot/message/reply",
-                        headers={
-                            "Authorization": f"Bearer {TOKEN}",
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "replyToken": reply_token,
-                            "messages": [{"type": "text", "text": final}]
-                        },
-                        timeout=5
-                    )
-                except:
-                    pass
+                requests.post(
+                    "https://api.line.me/v2/bot/message/reply",
+                    headers={
+                        "Authorization": f"Bearer {TOKEN}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "replyToken": reply_token,
+                        "messages": [{"type": "text", "text": final}]
+                    },
+                    timeout=5
+                )
 
             except Exception:
                 print(traceback.format_exc())
