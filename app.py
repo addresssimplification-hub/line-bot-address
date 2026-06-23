@@ -26,11 +26,10 @@ def ping():
 # ======================
 
 REMOVE_CITIES = ["台北市", "臺北市", "新北市", "桃園市", "北市"]
-
 IGNORE_TIME_WORDS = ["現在", "立即", "馬上", "立刻"]
 
 # ======================
-# CLEAN ADDRESS
+# ADDRESS CLEAN
 # ======================
 
 def clean_address(addr):
@@ -74,6 +73,31 @@ def format_time(text):
     return t
 
 # ======================
+# DATE (保留邏輯但目前未輸出)
+# ======================
+
+def format_date(text):
+    if not text:
+        return ""
+
+    now = datetime.now()
+
+    if any(w in text for w in ["今天", "今日", "當日"]):
+        return ""
+
+    m = re.match(r"^(\d{1,2})/(\d{1,2})$", text)
+    if m:
+        mo, d = int(m.group(1)), int(m.group(2))
+        return f"{mo}/{d}"
+
+    m = re.match(r"^(\d{1,2})號?$", text)
+    if m:
+        d = int(m.group(1))
+        return f"{now.month}/{d}"
+
+    return ""
+
+# ======================
 # ADDRESS
 # ======================
 
@@ -100,7 +124,6 @@ def extract_addresses(lines):
 
     return ups, downs
 
-# fallback
 def fallback(lines):
     a = []
     for l in lines:
@@ -117,16 +140,33 @@ def fallback(lines):
     return a, []
 
 # ======================
-# CLEAN REMARKS (重點修正)
+# PEOPLE
+# ======================
+
+def parse_people(n):
+    try:
+        n = int(n)
+    except:
+        return ""
+
+    if n <= 4:
+        return ""
+
+    fee = (n - 4) * 100
+    return f"{n}人 +{fee}"
+
+# ======================
+# REMARK (✔轉✅ + 橫排)
 # ======================
 
 def extract_remarks(lines):
     bad_words = [
-        "電話", "手機", "上車", "下車", "日期", "時間", "人數", "💰",
-        "麻煩填寫", "麻煩提供", "正確電話", "完整地址"
+        "電話", "手機", "麻煩", "填寫", "提供", "完整", "正確",
+        "日期", "時間", "人數", "💰", "地址"
     ]
 
-    r = []
+    tags = []
+
     for l in lines:
         l = l.strip()
         if not l:
@@ -135,9 +175,12 @@ def extract_remarks(lines):
         if any(x in l for x in bad_words):
             continue
 
-        r.append(l)
+        parts = re.split(r"\s+", l)
+        for p in parts:
+            if p:
+                tags.append("✅" + p)
 
-    return r
+    return "".join(tags)  # 橫排
 
 # ======================
 # PRICE
@@ -176,6 +219,7 @@ def callback():
                 reply_token = event.get("replyToken")
 
                 time = ""
+                people = ""
                 price = ""
 
                 ups, downs = extract_addresses(lines)
@@ -183,37 +227,50 @@ def callback():
                 if not ups and not downs:
                     ups, downs = fallback(lines)
 
-                remarks = []
-
-                for i, l in enumerate(lines):
+                for l in lines:
                     s = l.strip()
 
                     if "時間" in s:
                         time = format_time(s.split("：")[-1])
 
+                    elif "人數" in s:
+                        people = s.split("：")[-1]
+
                     elif "💰" in s or "價格" in s:
                         price = extract_price(s)
 
-                    elif "備註" in s:
-                        remarks = extract_remarks(lines[i+1:])
-
                 # ======================
-                # OUTPUT (你要的格式)
+                # OUTPUT
                 # ======================
                 output = []
 
                 if time:
                     output.append(time)
 
+                # 上車
                 for u in ups:
-                    output.append(f"⬆️上車：{u}")
+                    output.append(f"⬆️：{u}")
 
-                for d in downs:
-                    output.append(f"下車地址：{d}")
+                # 下車
+                if len(downs) == 1:
+                    output.append(f"下車地點：{downs[0]}")
+                elif len(downs) > 1:
+                    output.append("下車地點：" + "\n".join(downs))
 
-                if remarks:
-                    output.append("✅" + " ".join(remarks))
+                # 人數
+                ptxt = parse_people(people)
 
+                # 備註
+                remark_txt = extract_remarks(lines)
+
+                if ptxt and remark_txt:
+                    output.append(f"{ptxt}｜{remark_txt}")
+                elif ptxt:
+                    output.append(ptxt)
+                elif remark_txt:
+                    output.append(remark_txt)
+
+                # 價格
                 if price:
                     output.append(price)
 
