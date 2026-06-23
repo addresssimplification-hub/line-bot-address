@@ -71,6 +71,9 @@ def clean_address(addr):
     for c in REMOVE_CITIES:
         addr = addr.replace(c, "")
 
+    # 移除 XX里，例如：忠孝里、樂善里
+    addr = re.sub(r"[^區鄉鎮市]{1,6}里", "", addr)
+
     # 移除殘留欄位字
     addr = re.sub(r"^(第?二|第?三)?(上車|下車)(地址|地點)?[:：]?", "", addr)
     addr = re.sub(r"^(地址|地點)[:：]?", "", addr)
@@ -213,7 +216,9 @@ def fallback(lines):
             continue
 
         cleaned = clean_address(s)
-        if cleaned:
+
+        # 群組一般聊天不回覆：只有像地址/地標的內容才進 fallback
+        if re.search(r"(路|街|巷|弄|號|段|區|市|縣|機場|車站|高鐵|台北101|101)", cleaned):
             addresses.append(cleaned)
 
     if len(addresses) == 0:
@@ -390,7 +395,10 @@ def callback():
                 if price:
                     output.append(price)
 
-                final = "\n".join(output) or "無內容"
+                if not output:
+                    continue
+
+                final = "\n".join(output)
 
                 try:
                     requests.post(
