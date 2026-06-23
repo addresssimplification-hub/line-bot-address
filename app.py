@@ -28,6 +28,11 @@ def ping():
 IGNORE_DATE_WORDS = ["今天", "今日", "當日", "現在", "立即", "馬上", "立刻"]
 IGNORE_TIME_WORDS = ["現在", "立即", "馬上", "立刻"]
 
+IGNORE_REMARK_WORDS = [
+    "電話", "手機", "人數", "行李", "日期", "時間",
+    "上車", "下車", "💰", "價格", "麻煩", "請", "填寫", "提供"
+]
+
 
 # ======================
 # CLEAN ADDRESS
@@ -49,12 +54,12 @@ def format_time(text):
     if not text:
         return ""
 
-    t = text.strip()
+    t = text.strip().lower()
 
     if any(w in t for w in IGNORE_TIME_WORDS):
         return ""
 
-    m = re.search(r"(\d{1,2}):?(\d{0,2})\s*(am|pm)?", t.lower())
+    m = re.search(r"(\d{1,2}):?(\d{0,2})\s*(am|pm)?", t)
     if m:
         h = int(m.group(1))
         mi = m.group(2) if m.group(2) else "00"
@@ -95,19 +100,19 @@ def format_date(text):
 
 
 # ======================
-# PEOPLE
+# PEOPLE (ONLY >=5 SHOW)
 # ======================
-def parse_people(n):
+def format_people(n):
     try:
         n = int(re.search(r"\d+", str(n)).group())
     except:
-        return ""
+        return None
 
-    if n <= 4:
-        return f"{n}人"
+    if n < 5:
+        return None
 
     fee = (n - 4) * 100
-    return f"{n}人（+{fee}）"
+    return f"👥 {n}人（+{fee}）"
 
 
 # ======================
@@ -125,59 +130,59 @@ def extract_price(text):
 
 
 # ======================
-# ADDRESSES (AUTO SORT)
+# ADDRESSES
 # ======================
 def extract_addresses(lines):
-    up_map = {}
-    down_map = {}
-
-    num_map = {
-        "第一": 1,
-        "第二": 2,
-        "第三": 3,
-        "第四": 4,
-        "第五": 5
-    }
+    up = []
+    down = []
 
     for l in lines:
         s = l.strip()
         if not s:
             continue
 
-        # ========= 上車 =========
         if "上車" in s:
-            num = None
-
-            for k, v in num_map.items():
-                if k in s:
-                    num = v
-                    break
-
             addr = re.sub(r"(第一|第二|第三|第四|第五)?上車(地址)?[:：]?", "", s)
             addr = clean_address(addr)
-
             if addr:
-                up_map[num if num else len(up_map)+1] = addr
+                up.append(addr)
 
-        # ========= 下車 =========
         elif "下車" in s:
-            num = None
-
-            for k, v in num_map.items():
-                if k in s:
-                    num = v
-                    break
-
             addr = re.sub(r"(第一|第二|第三|第四|第五)?下車(地址)?[:：]?", "", s)
             addr = clean_address(addr)
-
             if addr:
-                down_map[num if num else len(down_map)+1] = addr
+                down.append(addr)
 
-    ups = [up_map[k] for k in sorted(up_map.keys())]
-    downs = [down_map[k] for k in sorted(down_map.keys())]
+    return up, down
 
-    return ups, downs
+
+# ======================
+# REMARKS (NO POLLUTION)
+# ======================
+def extract_remarks(lines):
+    r = []
+
+    for l in lines:
+        l = l.strip()
+        if not l:
+            continue
+
+        if any(x in l for x in IGNORE_REMARK_WORDS):
+            continue
+
+        if "備註" in l:
+            v = l.replace("備註：", "").replace("備註:", "").strip()
+            if v and v != "無":
+                r.append(v)
+            continue
+
+        # 過濾純提示句
+        if "‼️" in l:
+            continue
+
+        r.append(l)
+
+    return r
 
 
 # ======================
@@ -205,10 +210,10 @@ def callback():
                 time = ""
                 people = ""
                 price = ""
-                remarks = []
                 is_nosmoke = False
 
                 ups, downs = extract_addresses(lines)
+                remarks = extract_remarks(lines)
 
                 for s in lines:
                     s = s.strip()
@@ -228,19 +233,11 @@ def callback():
                     elif re.fullmatch(r"\d{3,6}", s):
                         price = f"💰{s}"
 
-                    elif "備註" in s:
-                        r = s.replace("備註：", "").replace("備註:", "").strip()
-                        if r:
-                            if "禁煙" in r:
-                                is_nosmoke = True
-                            else:
-                                remarks.append(r)
-
                     if "禁煙" in s:
                         is_nosmoke = True
 
                 # ======================
-                # OUTPUT BUILD
+                # OUTPUT
                 # ======================
                 output = []
 
@@ -261,19 +258,21 @@ def callback():
 
                 output.append("")
 
-                ppl = parse_people(people)
+                ppl = format_people(people)
 
-                people_line = []
+                tags = []
                 if ppl:
-                    people_line.append(ppl)
+                    tags.append(ppl)
                 if is_nosmoke:
-                    people_line.append("✅ 禁煙")
+                    tags.append("✅ 禁煙")
 
-                if people_line:
-                    output.append("👥 " + " ｜ ".join(people_line))
+                if tags:
+                    output.append(" ".join(tags))
 
                 if remarks:
-                    output.append("｜" + " ".join(remarks))
+                    clean_r = [r for r in remarks if r not in ["其他", "其他備註", "無"]]
+                    if clean_r:
+                        output.append("｜" + " ".join(clean_r))
 
                 if price:
                     output.append("")
