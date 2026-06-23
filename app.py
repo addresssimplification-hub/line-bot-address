@@ -29,7 +29,7 @@ REMOVE_CITIES = ["台北市", "臺北市", "新北市", "桃園市", "北市"]
 IGNORE_TIME_WORDS = ["現在", "立即", "馬上", "立刻"]
 
 # ======================
-# ADDRESS CLEAN（🔥只升級這裡）
+# ADDRESS CLEAN
 # ======================
 
 def clean_address(addr):
@@ -38,26 +38,18 @@ def clean_address(addr):
 
     addr = addr.strip()
 
-    # ======================
-    # 🚀 1. 移除郵遞區號（強化版）
-    # ======================
-    addr = re.sub(r"^\d{3,6}\s*", "", addr)   # 開頭郵遞區號
-    addr = re.sub(r"\b\d{3,6}\b", "", addr)   # 中間郵遞區號
+    # 🚀 移除郵遞區號
+    addr = re.sub(r"^\d{3,6}\s*", "", addr)
+    addr = re.sub(r"\b\d{3,6}\b", "", addr)
 
-    # ======================
-    # 2. 移除城市
-    # ======================
+    # 移除城市
     for c in REMOVE_CITIES:
         addr = addr.replace(c, "")
 
-    # ======================
-    # 3. 移除標記
-    # ======================
+    # 移除標記
     addr = re.sub(r'^(上車|下車|地址|地點|第二|第三)?[:：]?', '', addr)
 
-    # ======================
-    # 4. 清理空白
-    # ======================
+    # 清理空白
     addr = re.sub(r"\s+", "", addr)
 
     return addr.strip()
@@ -96,7 +88,7 @@ def format_time(text):
     return t
 
 # ======================
-# ADDRESS PARSER（不動）
+# ADDRESS PARSER
 # ======================
 
 def extract_addresses(lines):
@@ -128,7 +120,7 @@ def fallback(lines):
         l = l.strip()
         if not l:
             continue
-        if any(x in l for x in ["日期", "時間", "人數", "備註", "電話", "手機", "💰"]):
+        if any(x in l for x in ["日期", "時間", "人數", "手機", "電話", "💰"]):
             continue
         a.append(clean_address(l))
 
@@ -138,7 +130,7 @@ def fallback(lines):
     return a, []
 
 # ======================
-# PEOPLE（不動）
+# PEOPLE
 # ======================
 
 def parse_people(n):
@@ -154,7 +146,7 @@ def parse_people(n):
     return f"{n}人 +{fee}"
 
 # ======================
-# REMARK（不動）
+# 🔥 備註升級（你要的功能）
 # ======================
 
 def extract_remarks(lines):
@@ -174,14 +166,22 @@ def extract_remarks(lines):
             continue
 
         parts = re.split(r"\s+", l)
+
         for p in parts:
-            if p:
-                tags.append("✅" + p)
+            p = p.strip()
+            if not p:
+                continue
+
+            # 🚀 核心新增：統一加 ✅
+            if not p.startswith("✅"):
+                p = "✅" + p
+
+            tags.append(p)
 
     return "".join(tags)
 
 # ======================
-# PRICE（不動）
+# PRICE
 # ======================
 
 def extract_price(text):
@@ -195,7 +195,7 @@ def extract_price(text):
     return ""
 
 # ======================
-# CALLBACK（完全不動）
+# CALLBACK
 # ======================
 
 @app.route("/callback", methods=["POST"])
@@ -238,7 +238,7 @@ def callback():
                         price = extract_price(s)
 
                 # ======================
-                # OUTPUT（完全不動）
+                # OUTPUT
                 # ======================
                 output = []
 
