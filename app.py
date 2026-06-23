@@ -18,7 +18,7 @@ IGNORE_TIME_WORDS = ["現在", "立即", "馬上", "立刻"]
 IGNORE_DATE_WORDS = ["今天", "今日", "當日"]
 
 # ======================
-# CLEAN ADDRESS
+# ADDRESS CLEAN
 # ======================
 
 def clean_address(addr):
@@ -27,11 +27,10 @@ def clean_address(addr):
 
     addr = addr.strip()
 
-    # 移除郵遞區號
+    # 只移除開頭郵遞區號
     addr = re.sub(r"^\d{3,6}\s*", "", addr)
-    addr = re.sub(r"\b\d{3,6}\b", "", addr)
 
-    # 移除城市
+    # 移除指定城市
     for c in REMOVE_CITIES:
         addr = addr.replace(c, "")
 
@@ -133,7 +132,10 @@ def extract_addresses(lines):
 
     return ups, downs
 
-# fallback（已安全化）
+# ======================
+# FALLBACK（無上下車標記）
+# ======================
+
 def fallback(lines):
     a = []
 
@@ -149,10 +151,13 @@ def fallback(lines):
         if cleaned:
             a.append(cleaned)
 
-    if len(a) >= 2:
-        return [a[0]], a[1:]
+    if len(a) == 0:
+        return [], []
 
-    return a, []
+    if len(a) == 1:
+        return [a[0]], []
+
+    return [a[0]], a[1:]
 
 # ======================
 # PEOPLE
@@ -177,7 +182,7 @@ def extract_remarks(lines):
     bad_words = [
         "電話", "手機", "麻煩", "填寫", "提供", "完整", "正確",
         "日期", "時間", "人數", "💰", "地址",
-        "上車", "下車", "行李", "乘坐", "第二", "第三", "備註"
+        "上車", "下車", "行李", "乘坐", "第二", "第三"
     ]
 
     tags = []
@@ -193,11 +198,8 @@ def extract_remarks(lines):
         parts = re.split(r"\s+", l)
 
         for p in parts:
-            p = p.strip()
-            if not p:
-                continue
-
-            tags.append("✅" + p)
+            if p:
+                tags.append("✅" + p)
 
     return "".join(tags)
 
@@ -263,11 +265,11 @@ def callback():
                         price = extract_price(s)
 
                 # ======================
-                # OUTPUT（最終格式）
+                # OUTPUT
                 # ======================
                 output = []
 
-                # 日期+時間合併
+                # 日期+時間
                 if date or time:
                     output.append(f"{date} {time}".strip())
 
@@ -281,7 +283,7 @@ def callback():
                 elif len(downs) > 1:
                     output.append(f"下車地點：{downs[0]}")
                     for d in downs[1:]:
-                        output.append(f"🔽{clean_address(d)}")
+                        output.append(f"🔽{d}")
 
                 # 人數
                 ptxt = parse_people(people)
