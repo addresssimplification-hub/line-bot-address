@@ -39,11 +39,23 @@ def clean_line(line):
 
 
 def clean_address(addr):
+
     addr = addr.strip()
+
+    # 移除郵遞區號
+
     addr = re.sub(r"^\d{3,5}", "", addr)
-    addr = re.sub(r"(台北市|臺北市|新北市|桃園市|北市)", "", addr)
-    addr = re.sub(r"[\u4e00-\u9fff]{1,5}里", "", addr)
+
+    # 移除城市名稱，但保留區
+
+    addr = re.sub(r"^(台北市|臺北市|新北市|桃園市|北市)", "", addr)
+
+    # 只移除區後面的里名
+
+    addr = re.sub(r"(?<=[區鄉鎮市])[\u4e00-\u9fff]{1,6}里", "", addr)
+
     addr = re.sub(r"\s+", "", addr)
+
     return addr.strip()
 
 
