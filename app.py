@@ -18,32 +18,6 @@ IGNORE_TIME_WORDS = ["現在", "立即", "馬上", "立刻"]
 IGNORE_DATE_WORDS = ["今天", "今日", "當日"]
 
 # ======================
-# 🔥 新增：合併斷行地址
-# ======================
-
-def merge_broken_lines(lines):
-    merged = []
-    buffer = ""
-
-    for l in lines:
-        l = l.strip()
-        if not l:
-            continue
-
-        # 判斷是否為延續地址
-        if buffer and not any(x in l for x in ["上車", "下車", "日期", "時間", "人數", "手機", "電話", "💰", "備註"]):
-            buffer += l
-        else:
-            if buffer:
-                merged.append(buffer)
-            buffer = l
-
-    if buffer:
-        merged.append(buffer)
-
-    return merged
-
-# ======================
 # ADDRESS CLEAN
 # ======================
 
@@ -53,17 +27,13 @@ def clean_address(addr):
 
     addr = addr.strip()
 
-    # 郵遞區號
     addr = re.sub(r"^\d{3,6}\s*", "", addr)
 
-    # 城市移除
     for c in REMOVE_CITIES:
         addr = addr.replace(c, "")
 
-    # 標籤移除
     addr = re.sub(r'^(上車|下車|地址|地點|第二|第三)?[:：]?', '', addr)
 
-    # 空白清理
     addr = re.sub(r"\s+", "", addr)
 
     return addr.strip()
@@ -132,7 +102,7 @@ def format_date(text):
     return t
 
 # ======================
-# ADDRESS PARSER
+# ADDRESS
 # ======================
 
 def extract_addresses(lines):
@@ -159,7 +129,7 @@ def extract_addresses(lines):
     return ups, downs
 
 # ======================
-# FALLBACK（自動上下車）
+# FALLBACK
 # ======================
 
 def fallback(lines):
@@ -186,12 +156,12 @@ def fallback(lines):
     return [a[0]], a[1:]
 
 # ======================
-# PEOPLE
+# PEOPLE（🔥修正：支援無冒號）
 # ======================
 
 def parse_people(n):
     try:
-        n = int(n)
+        n = int(re.findall(r"\d+", str(n))[0])
     except:
         return ""
 
@@ -201,20 +171,27 @@ def parse_people(n):
     return f"{n}人 +{(n-4)*100}"
 
 # ======================
-# REMARKS
+# REMARKS（🔥修正：其他備註污染）
 # ======================
 
 def extract_remarks(lines):
     bad_words = [
         "電話", "手機", "麻煩", "填寫", "提供", "完整", "正確",
         "日期", "時間", "人數", "💰", "地址",
-        "上車", "下車", "行李", "乘坐", "第二", "第三"
+        "上車", "下車", "行李", "乘坐", "第二", "第三",
+        "其他備註", "備註"
     ]
 
     tags = []
 
     for l in lines:
         l = l.strip()
+        if not l:
+            continue
+
+        # 🔥 移除欄位標題
+        l = re.sub(r"^(其他備註|備註)[:：]?", "", l).strip()
+
         if not l:
             continue
 
@@ -262,9 +239,7 @@ def callback():
                     continue
 
                 text = event["message"]["text"]
-
-                # 🔥 先合併斷行
-                lines = merge_broken_lines(text.split("\n"))
+                lines = text.split("\n")
 
                 reply_token = event.get("replyToken")
 
