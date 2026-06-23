@@ -17,6 +17,32 @@ REMOVE_CITIES = ["台北市", "臺北市", "新北市", "桃園市", "北市"]
 IGNORE_TIME_WORDS = ["現在", "立即", "馬上", "立刻"]
 IGNORE_DATE_WORDS = ["今天", "今日", "當日"]
 
+
+# ======================
+# MERGE BROKEN LINES
+# ======================
+
+def merge_broken_lines(lines):
+    merged = []
+    buffer = ""
+
+    for l in lines:
+        l = l.strip()
+        if not l:
+            continue
+
+        if buffer and not re.search(r"(日期|時間|上車|下車|人數|手機|電話|行李|備註|💰)", l):
+            buffer += l
+        else:
+            if buffer:
+                merged.append(buffer)
+            buffer = l
+
+    if buffer:
+        merged.append(buffer)
+
+    return merged
+
 # ======================
 # ADDRESS CLEAN
 # ======================
@@ -239,7 +265,7 @@ def callback():
                     continue
 
                 text = event["message"]["text"]
-                lines = text.split("\n")
+                lines = merge_broken_lines(text.split("\n"))
 
                 reply_token = event.get("replyToken")
 
@@ -257,13 +283,17 @@ def callback():
                     s = l.strip()
 
                     if "日期" in s:
-                        date = format_date(s.split("：")[-1])
+                        m = re.search(r"(\d{1,2}/\d{1,2}|\d{1,2}號?|\d{1,2})", s)
+                        if m:
+                            date = format_date(m.group(1))
 
                     elif "時間" in s:
                         time = format_time(s.split("：")[-1])
 
                     elif "人數" in s:
-                        people = s.split("：")[-1]
+                        m = re.search(r"(\d+)", s)
+                        if m:
+                            people = m.group(1)
 
                     elif "💰" in s or "價格" in s:
                         price = extract_price(s)
