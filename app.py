@@ -22,7 +22,7 @@ def is_booking_text(text):
     keywords = [
         "上車", "下車", "日期", "時間", "人數", "乘坐人數",
         "機場", "桃機", "航廈", "悠遊GO", "預約",
-        "💰", "$", "＄"
+        "💰", "$", "＄", "固定"
     ]
     return any(k in text for k in keywords)
 
@@ -39,23 +39,16 @@ def clean_line(line):
 
 
 def clean_address(addr):
-
     addr = addr.strip()
-
-    # 移除郵遞區號
-
     addr = re.sub(r"^\d{3,5}", "", addr)
 
     # 移除城市名稱，但保留區
-
     addr = re.sub(r"^(台北市|臺北市|新北市|桃園市|北市)", "", addr)
 
-    # 只移除區後面的里名
-
+    # 只移除區後面的 XX里，保留區名
     addr = re.sub(r"(?<=[區鄉鎮市])[\u4e00-\u9fff]{1,6}里", "", addr)
 
     addr = re.sub(r"\s+", "", addr)
-
     return addr.strip()
 
 
@@ -129,14 +122,23 @@ def parse_time(text):
 
 
 def parse_price(text):
-    m = re.search(r"(?:固定\s*)?(?:💰|[$＄])\s*(\d+)", text)
-    if m:
-        return f"💰{m.group(1)}"
+    patterns = [
+        r"固定\s*💰?\s*(\d+)",
+        r"💰\s*(\d+)",
+        r"[$＄]\s*(\d+)"
+    ]
+
+    for pattern in patterns:
+        m = re.search(pattern, text)
+        if m:
+            return f"💰{m.group(1)}"
+
     return ""
 
 
 def parse_people(text):
     m = re.search(r"(?:人數|乘坐人數)\s*[:：]?\s*(.+)", text)
+
     if not m:
         m = re.search(r"(\d+)\s*人", text)
         if m:
@@ -146,6 +148,7 @@ def parse_people(text):
     else:
         raw = m.group(1).strip()
         nums = re.findall(r"(\d+)\s*(大|小|人)?", raw)
+
         if not nums:
             return ""
 
@@ -170,7 +173,7 @@ def parse_notes(text):
             if not note:
                 return ""
 
-            if re.search(r"^(?:💰|[$＄])\s*\d+", note):
+            if re.search(r"^(?:💰|[$＄]|固定)\s*\d+", note):
                 return ""
 
             note = re.sub(r"[，,、/]+", " ", note)
@@ -178,7 +181,7 @@ def parse_notes(text):
 
             parts = [
                 p for p in parts
-                if not re.search(r"^(?:💰|[$＄])\s*\d+", p)
+                if not re.search(r"^(?:💰|[$＄]|固定)\s*\d+", p)
             ]
 
             if not parts:
@@ -216,6 +219,7 @@ def parse_addresses(text):
             if addr:
                 dropoffs.append(addr)
 
+    # 無標籤雙行地址：第一行上車、第二行下車
     if not pickups and not dropoffs:
         address_like = []
         for line in lines:
@@ -254,6 +258,7 @@ def format_booking(text):
     line = ""
     if people_text:
         line += people_text
+
     if note_text:
         if line:
             line += "｜" + note_text
