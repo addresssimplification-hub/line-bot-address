@@ -18,6 +18,32 @@ IGNORE_TIME_WORDS = ["現在", "立即", "馬上", "立刻"]
 IGNORE_DATE_WORDS = ["今天", "今日", "當日"]
 
 # ======================
+# 🔥 新增：合併斷行地址
+# ======================
+
+def merge_broken_lines(lines):
+    merged = []
+    buffer = ""
+
+    for l in lines:
+        l = l.strip()
+        if not l:
+            continue
+
+        # 判斷是否為延續地址
+        if buffer and not any(x in l for x in ["上車", "下車", "日期", "時間", "人數", "手機", "電話", "💰", "備註"]):
+            buffer += l
+        else:
+            if buffer:
+                merged.append(buffer)
+            buffer = l
+
+    if buffer:
+        merged.append(buffer)
+
+    return merged
+
+# ======================
 # ADDRESS CLEAN
 # ======================
 
@@ -27,17 +53,17 @@ def clean_address(addr):
 
     addr = addr.strip()
 
-    # 只移除開頭郵遞區號
+    # 郵遞區號
     addr = re.sub(r"^\d{3,6}\s*", "", addr)
 
-    # 移除指定城市
+    # 城市移除
     for c in REMOVE_CITIES:
         addr = addr.replace(c, "")
 
-    # 移除標籤
+    # 標籤移除
     addr = re.sub(r'^(上車|下車|地址|地點|第二|第三)?[:：]?', '', addr)
 
-    # 清理空白
+    # 空白清理
     addr = re.sub(r"\s+", "", addr)
 
     return addr.strip()
@@ -133,7 +159,7 @@ def extract_addresses(lines):
     return ups, downs
 
 # ======================
-# FALLBACK（無上下車標記）
+# FALLBACK（自動上下車）
 # ======================
 
 def fallback(lines):
@@ -236,7 +262,10 @@ def callback():
                     continue
 
                 text = event["message"]["text"]
-                lines = text.split("\n")
+
+                # 🔥 先合併斷行
+                lines = merge_broken_lines(text.split("\n"))
+
                 reply_token = event.get("replyToken")
 
                 date = ""
@@ -269,15 +298,12 @@ def callback():
                 # ======================
                 output = []
 
-                # 日期+時間
                 if date or time:
                     output.append(f"{date} {time}".strip())
 
-                # 上車
                 for u in ups:
                     output.append(f"⬆️：{u}")
 
-                # 下車
                 if len(downs) == 1:
                     output.append(f"下車地點：{downs[0]}")
                 elif len(downs) > 1:
@@ -285,10 +311,7 @@ def callback():
                     for d in downs[1:]:
                         output.append(f"🔽{d}")
 
-                # 人數
                 ptxt = parse_people(people)
-
-                # 備註
                 remark_txt = extract_remarks(lines)
 
                 if ptxt and remark_txt:
@@ -299,7 +322,6 @@ def callback():
                 elif remark_txt:
                     output.append(remark_txt)
 
-                # 價格
                 if price:
                     output.append(price)
 
