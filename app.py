@@ -3,13 +3,10 @@ import requests
 import os
 import re
 from datetime import datetime
-import traceback
 
 app = Flask(__name__)
 
 TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-
-# ========= 基本設定 =========
 
 REMOVE_CITIES = ["台北市", "臺北市", "新北市", "桃園市", "北市"]
 
@@ -17,16 +14,6 @@ IGNORE_DATE_WORDS = ["今天", "今日", "當日", "現在", "立即", "馬上",
 IGNORE_TIME_WORDS = ["現在", "立即", "馬上", "立刻"]
 
 IGNORE_REMARKS = ["無", "沒有", "無備註", "不用", "-", "N/A", "n/a", ""]
-
-
-# ========= health check =========
-@app.route("/")
-def home():
-    return "OK"
-
-@app.route("/ping")
-def ping():
-    return "alive"
 
 
 # ========= utils =========
@@ -48,8 +35,41 @@ def clean_address_text(addr):
     return addr.strip()
 
 
-def safe_text(text):
-    return text if text else ""
+# ========= price =========
+
+def extract_price(text):
+    if not text:
+        return ""
+
+    m = re.search(r"(?:💰|價格|\$)?\s*(\d{3,6})", text)
+    if m:
+        return f"💰{m.group(1)}"
+
+    return ""
+
+
+# ========= time =========
+
+def format_time(text):
+    if not text:
+        return ""
+
+    t = text.strip()
+
+    if any(w in t for w in IGNORE_TIME_WORDS):
+        return ""
+
+    t = t.replace("預約", "")
+
+    # 0300 -> 03:00
+    m = re.match(r"^(\d{3,4})$", t)
+    if m:
+        v = m.group(1)
+        if len(v) == 3:
+            v = "0" + v
+        return v[:2] + ":" + v[2:]
+
+    return t
 
 
 # ========= date =========
@@ -65,7 +85,6 @@ def format_date(text):
 
     now = datetime.now()
 
-    # 23 / 23號
     m = re.match(r"^(\d{1,2})號?$", t)
     if m:
         day = int(m.group(1))
@@ -73,7 +92,6 @@ def format_date(text):
             return ""
         return f"{now.month}/{day}"
 
-    # 6/29
     m = re.match(r"^(\d{1,2})/(\d{1,2})$", t)
     if m:
         month = int(m.group(1))
@@ -85,24 +103,9 @@ def format_date(text):
     return t
 
 
-# ========= time =========
-
-def format_time(text):
-    if not text:
-        return ""
-
-    t = text.strip()
-
-    if any(w in t for w in IGNORE_TIME_WORDS):
-        return ""
-
-    t = t.replace("預約", "")
-    return t.strip()
-
-
 # ========= people =========
 
-def parse_people(num_text, remark_lines):
+def parse_people(num_text):
     try:
         n = int(num_text)
     except:
@@ -112,10 +115,6 @@ def parse_people(num_text, remark_lines):
         return ""
 
     fee = (n - 4) * 100
-    remark = " ".join(remark_lines).strip()
-
-    if remark:
-        return f"{n}人 +{fee}｜✅{remark}"
     return f"{n}人 +{fee}"
 
 
@@ -126,14 +125,10 @@ def extract_remarks(lines, start_idx):
 
     for i in range(start_idx, len(lines)):
         t = lines[i].strip()
-
         if not t:
             continue
 
-        if any(x in t for x in ["電話", "手機", "上車", "下車", "日期", "時間", "人數"]):
-            break
-
-        if t in IGNORE_REMARKS:
+        if any(x in t for x in ["電話", "手機", "上車", "下車", "日期", "時間", "人數", "💰"]):
             continue
 
         remarks.append(t)
@@ -141,7 +136,7 @@ def extract_remarks(lines, start_idx):
     return remarks
 
 
-# ========= addresses =========
+# ========= addresses（重點升級） =========
 
 def extract_addresses(lines):
     pickups = []
@@ -152,14 +147,16 @@ def extract_addresses(lines):
         if not l:
             continue
 
-        if "上車" in l or "⬆️" in l:
-            l = l.replace("上車地址：", "").replace("上車：", "").replace("⬆️", "")
+        # 上車（含第二上車）
+        if "上車" in l:
+            l = re.sub(r"(第二|第三)?上車(地址)?[:：]?", "", l)
             l = clean_address_text(l)
             if l:
                 pickups.append(l)
 
-        elif "下車" in l or "⬇️" in l:
-            l = l.replace("下車地址：", "").replace("下車：", "").replace("⬇️", "")
+        # 下車
+        elif "下車" in l:
+            l = l.replace("下車地址：", "").replace("下車：", "")
             l = clean_address_text(l)
             if l:
                 dropoffs.append(l)
@@ -167,16 +164,15 @@ def extract_addresses(lines):
     return pickups, dropoffs
 
 
+# ========= fallback =========
+
 def fallback_addresses(lines):
     addrs = []
-
     for l in lines:
         l = l.strip()
         if not l:
             continue
-        if any(x in l for x in ["日期", "時間", "人數", "備註", "電話", "手機"]):
-            continue
-        if "http" in l:
+        if any(x in l for x in ["日期", "時間", "人數", "備註", "電話", "手機", "💰"]):
             continue
         addrs.append(clean_address_text(l))
 
@@ -186,116 +182,95 @@ def fallback_addresses(lines):
     return addrs, []
 
 
-# ========= LINE CALLBACK (PRO SAFE) =========
+# ========= LINE =========
 
 @app.route("/callback", methods=["POST"])
 def callback():
-    try:
-        body = request.get_json(force=True)
+    body = request.get_json()
 
-        events = body.get("events", [])
+    for event in body.get("events", []):
 
-        for event in events:
+        if event.get("type") != "message":
+            continue
 
-            if event.get("type") != "message":
-                continue
+        if event["message"]["type"] != "text":
+            continue
 
-            if event["message"]["type"] != "text":
-                continue
+        text = event["message"]["text"]
+        lines = text.split("\n")
 
-            text = event["message"]["text"]
-            lines = text.split("\n")
+        reply_token = event.get("replyToken")
 
-            reply_token = event.get("replyToken")
+        date = ""
+        time = ""
+        people = ""
+        price = ""
+        remark_lines = []
 
-            date = ""
-            time = ""
-            people = ""
-            remark_lines = []
+        pickups, dropoffs = extract_addresses(lines)
 
-            pickups, dropoffs = extract_addresses(lines)
+        if not pickups and not dropoffs:
+            pickups, dropoffs = fallback_addresses(lines)
 
-            if not pickups and not dropoffs:
-                pickups, dropoffs = fallback_addresses(lines)
+        for i, line in enumerate(lines):
+            l = line.strip()
 
-            for i, line in enumerate(lines):
-                l = line.strip()
+            if "日期" in l:
+                date = format_date(l.split("：")[-1])
 
-                if "日期" in l:
-                    date = format_date(l.split("：")[-1])
+            elif "時間" in l:
+                time = format_time(l.split("：")[-1])
 
-                elif "時間" in l:
-                    time = format_time(l.split("：")[-1])
+            elif "乘坐人數" in l or "人數" in l:
+                people = parse_people(l.split("：")[-1])
 
-                elif "乘坐人數" in l or "人數" in l:
-                    people = l.split("：")[-1]
+            elif "💰" in l or "價格" in l:
+                price = extract_price(l)
 
-                elif "備註" in l:
+            elif "備註" in l:
+                remark_lines = extract_remarks(lines, i + 1)
 
-                    same_line = ""
-                    if "：" in l:
-                        same_line = l.split("：", 1)[1].strip()
+        output = []
 
-                    remark_lines = []
+        if date and time:
+            output.append(f"{date} {time}")
+        elif date:
+            output.append(date)
+        elif time:
+            output.append(time)
 
-                    if same_line and same_line not in IGNORE_REMARKS:
-                        remark_lines.append(same_line)
+        for p in pickups:
+            output.append(f"⬆️上車：{p}")
 
-                    remark_lines.extend(extract_remarks(lines, i + 1))
+        for d in dropoffs:
+            output.append(f"下車地址：{d}")
 
-            output = []
+        if people:
+            output.append(people)
 
-            if date and time:
-                output.append(f"{date} {time}")
-            elif date:
-                output.append(date)
-            elif time:
-                output.append(time)
+        if price:
+            output.append(price)
 
-            for p in pickups:
-                output.append(f"⬆️{p}")
+        if remark_lines:
+            output.append("｜✅" + " ".join(remark_lines))
 
-            for d in dropoffs:
-                output.append(f"下車地址：{d}")
+        final_text = "\n".join(output) or "無有效內容"
 
-            people_text = parse_people(people, remark_lines)
-            if people_text:
-                output.append(people_text)
-
-            final_text = "\n".join(output) or "無有效內容"
-
-            # 防止 LINE timeout
-            headers = {
+        requests.post(
+            "https://api.line.me/v2/bot/message/reply",
+            headers={
                 "Authorization": f"Bearer {TOKEN}",
                 "Content-Type": "application/json"
-            }
-
-            data = {
+            },
+            json={
                 "replyToken": reply_token,
-                "messages": [
-                    {"type": "text", "text": final_text}
-                ]
-            }
+                "messages": [{"type": "text", "text": final_text}]
+            },
+            timeout=5
+        )
 
-            try:
-                requests.post(
-                    "https://api.line.me/v2/bot/message/reply",
-                    headers=headers,
-                    json=data,
-                    timeout=5
-                )
-            except Exception as e:
-                print("LINE API ERROR:", e)
+    return "OK", 200
 
-        return "OK", 200
-
-    except Exception as e:
-        print("FATAL ERROR:", e)
-        print(traceback.format_exc())
-        return "OK", 200
-
-
-# ========= RUN =========
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
