@@ -3,6 +3,7 @@ import requests
 import os
 import re
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import traceback
 
 app = Flask(__name__)
@@ -21,6 +22,7 @@ IGNORE_TIME_WORDS = [
 ]
 
 IGNORE_DATE_WORDS = ["今天", "今日", "當日"]
+TAIWAN_TZ = ZoneInfo("Asia/Taipei")
 
 # ======================
 # MERGE BROKEN LINES
@@ -133,7 +135,7 @@ def format_date(text):
     if not text:
         return ""
 
-    now = datetime.now()
+    now = datetime.now(TAIWAN_TZ)
     t = text.strip()
 
     if any(w in t for w in IGNORE_DATE_WORDS):
