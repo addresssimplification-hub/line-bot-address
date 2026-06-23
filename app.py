@@ -15,6 +15,7 @@ IGNORE_TIME_WORDS = ["現在", "立即", "馬上", "立刻"]
 
 IGNORE_REMARKS = ["無", "沒有", "無備註", "不用", "-", "N/A", "n/a", ""]
 
+
 def clean_postcode(addr: str):
     return re.sub(r"^\d{3,5}\s*", "", addr.strip())
 
@@ -29,11 +30,7 @@ def clean_address_text(addr):
     addr = clean_postcode(addr)
     addr = clean_city(addr)
 
-    addr = re.sub(
-        r'^(地址[:：]?\s*|上車[:：]?\s*|下車[:：]?\s*)',
-        '',
-        addr
-    )
+    addr = re.sub(r'^(地址[:：]?\s*|上車[:：]?\s*|下車[:：]?\s*)', '', addr)
 
     return addr.strip()
 
@@ -62,7 +59,6 @@ def format_date(text):
 
     now = datetime.now()
 
-    # 23 / 23號
     m = re.match(r"^(\d{1,2})號?$", t)
     if m:
         day = int(m.group(1))
@@ -70,7 +66,6 @@ def format_date(text):
             return ""
         return f"{now.month}/{day}"
 
-    # 6/29
     m = re.match(r"^(\d{1,2})/(\d{1,2})$", t)
     if m:
         month = int(m.group(1))
@@ -143,7 +138,6 @@ def extract_addresses(lines):
             if l:
                 dropoffs.append(l)
 
-
     return pickups, dropoffs
 
 
@@ -168,8 +162,9 @@ def fallback_addresses(lines):
         return [addrs[0]], addrs[1:]
 
     return addrs, []
-    
-    @app.route("/")
+
+
+@app.route("/")
 def home():
     return "OK"
 
@@ -227,7 +222,6 @@ def callback():
 
                 remark_lines.extend(extract_remarks(lines, i + 1))
 
-
         output = []
 
         if date and time:
@@ -271,3 +265,7 @@ def callback():
         )
 
     return "OK", 200
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
