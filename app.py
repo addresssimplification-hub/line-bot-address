@@ -20,7 +20,7 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 def is_booking_text(text):
     keywords = [
-        "上車", "下車", "日期", "時間", "人數",
+        "上車", "下車", "日期", "時間", "人數", "乘坐人數",
         "機場", "桃機", "航廈", "悠遊GO", "預約",
         "💰", "$", "＄"
     ]
@@ -30,7 +30,11 @@ def is_booking_text(text):
 def clean_line(line):
     line = line.strip()
     line = re.sub(r"^[\s\-—–_]+", "", line)
-    line = re.sub(r"^(日期|時間|上車地址|下車地址|上車|下車|第二上車|第三上車|第二下車|第三下車|地址)\s*[:：]?\s*", "", line)
+    line = re.sub(
+        r"^(日期|時間|上車地址|下車地址|上車|下車|第二上車|第三上車|第二下車|第三下車|地址)\s*[:：]?\s*",
+        "",
+        line
+    )
     return line.strip()
 
 
@@ -38,10 +42,7 @@ def clean_address(addr):
     addr = addr.strip()
     addr = re.sub(r"^\d{3,5}", "", addr)
     addr = re.sub(r"(台北市|臺北市|新北市|桃園市|北市)", "", addr)
-
-    # 移除 XX里
     addr = re.sub(r"[\u4e00-\u9fff]{1,5}里", "", addr)
-
     addr = re.sub(r"\s+", "", addr)
     return addr.strip()
 
@@ -66,17 +67,13 @@ def parse_date(text):
             return ""
         return f"{current_month}/{day}"
 
-    if any(w in text for w in ["今天", "今日", "當日", "現在", "立即", "馬上", "立刻"]):
-        return ""
-
     return ""
 
 
 def parse_time(text):
-    if re.search(r"(現在|立即|馬上|立刻)", text):
+    if re.search(r"時間\s*[:：]?\s*(現在|立即|馬上|立刻)", text):
         return ""
 
-    # 時間：早上5:30 / 下午6:30 / 晚上 9:05
     m = re.search(
         r"時間\s*[:：]?\s*(早上|上午|下午|晚上|中午|凌晨)?\s*(\d{1,2})\s*[:：]\s*(\d{2})",
         text,
@@ -96,7 +93,6 @@ def parse_time(text):
 
         return f"{hour:02d}:{minute:02d}"
 
-    # 0600pm / 0530am / 0600 pm
     m = re.search(r"時間\s*[:：]?\s*(\d{1,2})(\d{2})\s*(am|pm|AM|PM)", text)
     if m:
         hour = int(m.group(1))
@@ -110,7 +106,6 @@ def parse_time(text):
 
         return f"{hour:02d}:{minute:02d}"
 
-    # 0500 / 1830
     m = re.search(r"時間\s*[:：]?\s*(\d{1,2})(\d{2})", text)
     if m:
         hour = int(m.group(1))
@@ -129,17 +124,15 @@ def parse_price(text):
 
 
 def parse_people(text):
-    m = re.search(r"人數\s*[:：]?\s*(.+)", text)
+    m = re.search(r"(?:人數|乘坐人數)\s*[:：]?\s*(.+)", text)
     if not m:
         m = re.search(r"(\d+)\s*人", text)
         if m:
             people = int(m.group(1))
         else:
             return ""
-
     else:
         raw = m.group(1).strip()
-
         nums = re.findall(r"(\d+)\s*(大|小|人)?", raw)
         if not nums:
             return ""
@@ -156,21 +149,32 @@ def parse_people(text):
 
 
 def parse_notes(text):
-    m = re.search(r"備註\s*[:：]?\s*(.*)", text)
-    if not m:
-        return ""
+    lines = text.splitlines()
 
-    note = m.group(1).strip()
-    if not note:
-        return ""
+    for line in lines:
+        if re.match(r"^\s*(備註|其他備註)\s*[:：]?", line):
+            note = re.sub(r"^\s*(備註|其他備註)\s*[:：]?\s*", "", line).strip()
 
-    note = re.sub(r"[，,、/]+", " ", note)
-    parts = [p.strip() for p in note.split() if p.strip()]
+            if not note:
+                return ""
 
-    if not parts:
-        return ""
+            if re.search(r"^(?:💰|[$＄])\s*\d+", note):
+                return ""
 
-    return "".join([f"✅{p}" for p in parts])
+            note = re.sub(r"[，,、/]+", " ", note)
+            parts = [p.strip() for p in note.split() if p.strip()]
+
+            parts = [
+                p for p in parts
+                if not re.search(r"^(?:💰|[$＄])\s*\d+", p)
+            ]
+
+            if not parts:
+                return ""
+
+            return "".join([f"✅{p}" for p in parts])
+
+    return ""
 
 
 def parse_addresses(text):
@@ -200,7 +204,6 @@ def parse_addresses(text):
             if addr:
                 dropoffs.append(addr)
 
-    # 無標籤雙行地址：第一行上車、第二行下車
     if not pickups and not dropoffs:
         address_like = []
         for line in lines:
@@ -229,7 +232,7 @@ def format_booking(text):
         output.append(dt)
 
     for p in pickups:
-        output.append(f"⬆️：{p}")
+        output.append(f"⬆️{p}")
 
     if dropoffs:
         output.append(f"下車地點：{dropoffs[0]}")
