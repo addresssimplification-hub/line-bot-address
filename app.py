@@ -1,438 +1,454 @@
-from flask import Flask, request
-import requests
 import os
 import re
+import logging
 from datetime import datetime
-from zoneinfo import ZoneInfo
-import traceback
+from flask import Flask, request, abort
 
+from linebot import LineBotApi, WebhookHandler
+from linebot.exceptions import InvalidSignatureError
+from linebot.models import MessageEvent, TextMessage, TextSendMessage
+
+# =====================================================
+# 基本設定
+# =====================================================
+logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
-TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN", "")
+CHANNEL_SECRET = os.getenv("CHANNEL_SECRET", "")
 
-# ======================
-# CONFIG
-# ======================
+line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(CHANNEL_SECRET)
 
-REMOVE_CITIES = ["台北市", "臺北市", "新北市", "桃園市", "北市"]
+# =====================================================
+# 關鍵字設定
+# =====================================================
+NOW_WORDS = ["現在", "立即", "馬上", "立刻", "即時"]
+TODAY_WORDS = ["今天", "今日", "當日"] + NOW_WORDS
 
-IGNORE_TIME_WORDS = [
-    "現在", "立即", "馬上", "立刻",
-    "即時", "即刻", "隨時"
+UP_LABELS = ["上車地址", "上車地點", "上車", "第一上車", "第二上車", "第三上車"]
+DOWN_LABELS = ["下車地址", "下車地點", "下車", "第一下車", "第二下車", "第三下車"]
+
+NOTE_KEYWORDS = [
+    "禁煙", "禁菸", "慢慢開", "進口", "有寵", "有寵物", "寵物",
+    "休旅", "轉帳", "禁快車", "安全座椅", "兒童座椅", "舉牌",
 ]
 
-IGNORE_DATE_WORDS = ["今天", "今日", "當日"]
-TAIWAN_TZ = ZoneInfo("Asia/Taipei")
-
-# ======================
-# MERGE BROKEN LINES
-# ======================
-
-def merge_broken_lines(lines):
-    merged = []
-    buffer = ""
-
-    # 只把明顯是上一行地址延續的內容接回去
-    # 例如：長安東路53 + 巷1-3號 → 長安東路53巷1-3號
-    # 不會再把第二個完整地址接到第一個地址後面
-    CONTINUE_WORDS = ["巷", "弄", "號", "樓", "F", "f"]
-
-    for l in lines:
-        l = l.strip()
-        if not l:
-            continue
-
-        if buffer and any(l.startswith(x) for x in CONTINUE_WORDS):
-            buffer += l
-        else:
-            if buffer:
-                merged.append(buffer)
-            buffer = l
-
-    if buffer:
-        merged.append(buffer)
-
-    return merged
-
-# ======================
-# CLEAN ADDRESS
-# ======================
-
-def clean_address(addr):
-    if not addr:
-        return ""
-
-    addr = addr.strip()
-
-    # 只移除開頭郵遞區號，不移除門牌號碼
-    addr = re.sub(r"^\d{3,6}\s*", "", addr)
-
-    # 移除指定城市
-    for c in REMOVE_CITIES:
-        addr = addr.replace(c, "")
-
-    # 移除 XX里，例如：忠孝里、樂善里
-    addr = re.sub(r"[^區鄉鎮市]{1,6}里", "", addr)
-
-    # 移除殘留欄位字
-    addr = re.sub(r"^(第?二|第?三)?(上車|下車)(地址|地點)?[:：]?", "", addr)
-    addr = re.sub(r"^(地址|地點)[:：]?", "", addr)
-
-    # 清理空白
-    addr = re.sub(r"\s+", "", addr)
-
-    return addr.strip()
-
-# ======================
-# TIME
-# ======================
-
-def format_time(text):
-    if not text:
-        return ""
-
-    t = text.strip().lower()
-
-    if any(w in t for w in IGNORE_TIME_WORDS):
-        return ""
-
-    t = t.replace("預約", "").strip()
-
-    # 0500 / 0600pm / 630am
-    m = re.match(r"^(\d{3,4})\s*(am|pm)?$", t)
-    if m:
-        num = m.group(1)
-        ap = m.group(2)
-
-        if len(num) == 3:
-            num = "0" + num
-
-        h = int(num[:2])
-        mi = num[2:]
-
-        if ap == "pm" and h < 12:
-            h += 12
-        if ap == "am" and h == 12:
-            h = 0
-
-        return f"{h:02d}:{mi}"
-
-    # 6:30 / 6:30pm / 6:30 AM
-    m = re.match(r"^(\d{1,2}):(\d{2})\s*(am|pm)?$", t)
-    if m:
-        h = int(m.group(1))
-        mi = m.group(2)
-        ap = m.group(3)
-
-        if ap == "pm" and h < 12:
-            h += 12
-        if ap == "am" and h == 12:
-            h = 0
-
-        return f"{h:02d}:{mi}"
-
-    # 非時間內容不顯示
-    return ""
-
-# ======================
-# DATE
-# ======================
-
-def format_date(text):
-    if not text:
-        return ""
-
-    now = datetime.now(TAIWAN_TZ)
-    t = text.strip()
-
-    if any(w in t for w in IGNORE_DATE_WORDS):
-        return ""
-
-    # 7/14
-    m = re.match(r"^(\d{1,2})/(\d{1,2})$", t)
-    if m:
-        mo = int(m.group(1))
-        d = int(m.group(2))
-
-        if mo == now.month and d == now.day:
-            return ""
-
-        return f"{mo}/{d}"
-
-    # 24 / 24號
-    m = re.match(r"^(\d{1,2})號?$", t)
-    if m:
-        d = int(m.group(1))
-
-        if d == now.day:
-            return ""
-
-        return f"{now.month}/{d}"
-
-    return ""
-
-# ======================
-# ADDRESS PARSER
-# ======================
-
-def extract_addresses(lines):
-    ups = []
-    downs = []
-
-    for raw in lines:
-        s = raw.strip()
-        if not s:
-            continue
-
-        if "上車" in s:
-            s = re.sub(r"^(第?二|第?三)?上車(地址|地點)?[:：]?", "", s)
-            s = clean_address(s)
-
-            if s:
-                ups.append(s)
-
-        elif "下車" in s:
-            s = re.sub(r"^(第?二|第?三)?下車(地址|地點)?[:：]?", "", s)
-            s = clean_address(s)
-
-            if s:
-                downs.append(s)
-
-    return ups, downs
-
-# ======================
-# FALLBACK
-# ======================
-
-def fallback(lines):
-    addresses = []
-
-    for l in lines:
-        s = l.strip()
-        if not s:
-            continue
-
-        if any(x in s for x in ["日期", "時間", "人數", "手機", "電話", "💰", "價格", "備註", "行李"]):
-            continue
-
-        cleaned = clean_address(s)
-
-        # 群組一般聊天不回覆：只有像地址/地標的內容才進 fallback
-        if re.search(r"(路|街|巷|弄|號|段|區|市|縣|機場|車站|高鐵|台北101|101)", cleaned):
-            addresses.append(cleaned)
-
-    if len(addresses) == 0:
-        return [], []
-
-    if len(addresses) == 1:
-        return [addresses[0]], []
-
-    # 沒有標記上下車時：第一個地址=上車，第二個以後=下車/多下車
-    return [addresses[0]], addresses[1:]
-
-# ======================
-# PEOPLE
-# ======================
-
-def parse_people(text):
-    try:
-        n = int(re.findall(r"\d+", str(text))[0])
-    except:
-        return ""
-
-    if n <= 4:
-        return ""
-
-    return f"{n}人 +{(n - 4) * 100}"
-
-# ======================
-# REMARKS
-# ======================
-
-def extract_remarks(lines):
-    tags = []
-
-    for raw in lines:
-        l = raw.strip()
-        if not l:
-            continue
-
-        # 只抓備註欄位，避免地址/行李/上下車誤進備註
-        if "備註" not in l:
-            continue
-
-        l = re.sub(r"^(其他)?備註[:：]?", "", l).strip()
-
-        if not l:
-            continue
-
-        for p in re.split(r"\s+", l):
-            p = p.strip()
-            if p:
-                tags.append("✅" + p)
-
-    return "".join(tags)
-
-# ======================
-# PRICE
-# ======================
-
-def extract_price(text):
-    if not text:
-        return ""
-
-    m = re.search(r"(?:💰|\$|價格|固定)?\s*(\d{3,6})", text)
-    if m:
-        return f"💰{m.group(1)}"
-
-    return ""
-
-# ======================
-# HEALTH CHECK
-# ======================
-
-@app.route("/")
+# =====================================================
+# Flask / LINE Webhook
+# =====================================================
+@app.route("/", methods=["GET"])
 def home():
     return "OK"
 
-@app.route("/ping")
-def ping():
-    return "alive"
-
-# ======================
-# CALLBACK
-# ======================
 
 @app.route("/callback", methods=["POST"])
 def callback():
+    signature = request.headers.get("X-Line-Signature", "")
+    body = request.get_data(as_text=True)
+
+    app.logger.info("Request body: %s", body)
+
     try:
-        body = request.get_json(force=True)
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        abort(400)
+    except Exception as e:
+        app.logger.exception("Webhook error: %s", e)
+        abort(500)
 
-        for event in body.get("events", []):
-            try:
-                if event.get("type") != "message":
-                    continue
+    return "OK"
 
-                if event["message"]["type"] != "text":
-                    continue
 
-                text = event["message"]["text"]
-                lines = merge_broken_lines(text.split("\n"))
+@handler.add(MessageEvent, message=TextMessage)
+def handle_message(event):
+    text = event.message.text or ""
 
-                reply_token = event.get("replyToken")
+    # 防止群組一般聊天也觸發，例如：好、要嗎、謝謝
+    if not should_process(text):
+        return
 
-                date = ""
-                time = ""
-                people = ""
-                price = ""
+    result = format_booking(text)
+    if result:
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=result)
+        )
 
-                ups, downs = extract_addresses(lines)
+# =====================================================
+# 是否需要處理
+# =====================================================
+def should_process(text: str) -> bool:
+    t = normalize_text(text)
 
-                if not ups and not downs:
-                    ups, downs = fallback(lines)
+    if len(t.strip()) <= 2:
+        return False
 
-                for s in lines:
-                    s = s.strip()
+    strong_keywords = [
+        "上車", "下車", "日期", "時間", "人數", "乘坐人數", "手機", "電話",
+        "行李", "航班", "備註", "機場", "桃機", "松機", "航廈", "地址",
+        "💰", "$", "＄"
+    ]
 
-                    if "日期" in s:
-                        m = re.search(r"(\d{1,2}/\d{1,2}|\d{1,2}號?|\d{1,2})", s)
-                        if m:
-                            date = format_date(m.group(1))
-                        elif any(w in s for w in IGNORE_DATE_WORDS):
-                            date = ""
+    if any(k in t for k in strong_keywords):
+        return True
 
-                    elif "時間" in s:
-                        parts = re.split(r"[:：]", s, 1)
-                        if len(parts) > 1:
-                            time = format_time(parts[1].strip())
-                        else:
-                            time = ""
+    # 無標籤但有兩行以上像地址，也處理：第一行上車、第二行下車
+    address_like_lines = []
+    for line in split_lines(t):
+        if is_address_like(line):
+            address_like_lines.append(line)
 
-                    elif "人數" in s:
-                        m = re.search(r"(\d+)", s)
-                        if m:
-                            people = m.group(1)
+    return len(address_like_lines) >= 2
 
-                    elif "💰" in s or "價格" in s or "固定" in s:
-                        price = extract_price(s)
+# =====================================================
+# 主格式化
+# =====================================================
+def format_booking(text: str) -> str:
+    original_text = text
+    text = normalize_text(text)
+    lines = split_lines(text)
 
-                remarks = extract_remarks(lines)
+    date_text = parse_date(text)
+    time_text = parse_time(text)
+    price_text = parse_price(text)
+    people_line = parse_people(text)
+    note_line = parse_notes(text)
 
-                output = []
+    ups, downs = parse_addresses(lines)
 
-                # 日期 + 時間同一行；今天不顯示日期
-                if date and time:
-                    output.append(f"{date} {time}")
-                elif time:
-                    output.append(time)
-                elif date:
-                    output.append(date)
+    output = []
 
-                # 上車
-                for u in ups:
-                    output.append(f"⬆️{u}")
+    # 日期時間：今天/當日不顯示日期，但時間仍要顯示
+    date_time_parts = []
+    if date_text:
+        date_time_parts.append(date_text)
+    if time_text:
+        date_time_parts.append(time_text)
+    if date_time_parts:
+        output.append(" ".join(date_time_parts))
 
-                # 下車
-                if len(downs) == 1:
-                    output.append(f"下車地點：{downs[0]}")
-                elif len(downs) > 1:
-                    output.append(f"下車地點：{downs[0]}")
-                    for d in downs[1:]:
-                        output.append(f"🔽{d}")
+    for addr in ups:
+        output.append(f"⬆️：{addr}")
 
-                # 人數 + 備註
-                ptxt = parse_people(people)
+    if downs:
+        output.append(f"下車地點：{downs[0]}")
+        for addr in downs[1:]:
+            output.append(f"🔽{addr}")
 
-                if ptxt and remarks:
-                    output.append(f"{ptxt}｜")
-                    output.append(remarks)
-                elif ptxt:
-                    output.append(f"{ptxt}｜")
-                elif remarks:
-                    output.append(remarks)
+    people_note = ""
+    if people_line:
+        people_note += people_line
+    if note_line:
+        if people_note:
+            people_note += "｜" + note_line
+        else:
+            people_note += "｜" + note_line
+    if people_note:
+        output.append(people_note)
 
-                # 價格固定最下方
-                if price:
-                    output.append(price)
+    if price_text:
+        output.append(price_text)
 
-                if not output:
-                    continue
+    return "\n".join(output).strip()
 
-                final = "\n".join(output)
+# =====================================================
+# 基本文字處理
+# =====================================================
+def normalize_text(text: str) -> str:
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("臺", "台")
+    text = text.replace("（", "(").replace("）", ")")
+    text = text.replace("；", ";")
+    return text
 
-                try:
-                    requests.post(
-                        "https://api.line.me/v2/bot/message/reply",
-                        headers={
-                            "Authorization": f"Bearer {TOKEN}",
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "replyToken": reply_token,
-                            "messages": [{"type": "text", "text": final}]
-                        },
-                        timeout=5
-                    )
-                except Exception:
-                    print(traceback.format_exc())
 
-            except Exception:
-                print(traceback.format_exc())
-                continue
+def split_lines(text: str):
+    result = []
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        if set(line) <= set("-—_─═ "):
+            continue
+        if "悠遊GO" in line or "機場預約" in line:
+            continue
+        result.append(line)
+    return result
 
-        return "OK", 200
+# =====================================================
+# 日期處理
+# =====================================================
+def parse_date(text: str) -> str:
+    today = datetime.now()
 
-    except Exception:
-        print(traceback.format_exc())
-        return "OK", 200
+    # 今天、今日、當日、現在：不顯示日期
+    if re.search(r"日期[:：\s]*(今天|今日|當日|現在|立即|馬上|立刻)", text):
+        return ""
 
-# ======================
-# START
-# ======================
+    # 日期：6/24（三） 或 6/24
+    m = re.search(r"日期[:：\s]*([0-9]{1,2})\s*/\s*([0-9]{1,2})", text)
+    if m:
+        month = int(m.group(1))
+        day = int(m.group(2))
+        # 如果是今天，不顯示日期
+        if month == today.month and day == today.day:
+            return ""
+        return f"{month}/{day}"
 
-if __name__ == "__main__":
-    app.run(
-        host="0.0.0.0",
-        port=10000,
-        threaded=True
+    # 獨立日期：7/14（三）
+    m = re.search(r"(?:^|\n)\s*([0-9]{1,2})\s*/\s*([0-9]{1,2})(?:\s*\([^)]*\))?", text)
+    if m:
+        month = int(m.group(1))
+        day = int(m.group(2))
+        if month == today.month and day == today.day:
+            return ""
+        return f"{month}/{day}"
+
+    # 日期：24、日期：24號，視為當月
+    m = re.search(r"日期[:：\s]*([0-9]{1,2})\s*號?", text)
+    if m:
+        day = int(m.group(1))
+        if day == today.day:
+            return ""
+        return f"{today.month}/{day}"
+
+    return ""
+
+# =====================================================
+# 時間處理
+# =====================================================
+def parse_time(text: str) -> str:
+    # 現在/立即/馬上/立刻：不顯示時間
+    if re.search(r"時間[:：\s]*(現在|立即|馬上|立刻|即時)", text):
+        return ""
+
+    candidates = []
+
+    # 時間：早上5:30、時間：下午 6:30、早上5:30
+    pattern1 = re.compile(
+        r"(?:時間[:：\s]*)?(早上|上午|下午|晚上|中午|凌晨)?\s*([0-9]{1,2})\s*[:：]\s*([0-9]{2})\s*(am|pm|AM|PM)?"
     )
+    for m in pattern1.finditer(text):
+        candidates.append((m.group(1) or "", m.group(2), m.group(3), m.group(4) or ""))
+
+    # 時間：0600pm、0600 pm、6pm、0500
+    pattern2 = re.compile(
+        r"(?:時間[:：\s]*)?(早上|上午|下午|晚上|中午|凌晨)?\s*([0-9]{1,4})\s*(am|pm|AM|PM)?"
+    )
+    for m in pattern2.finditer(text):
+        raw = m.group(2)
+        period = m.group(1) or ""
+        ampm = m.group(3) or ""
+
+        # 避免把日期、價格、地址號碼誤當時間
+        start = max(0, m.start() - 6)
+        prefix = text[start:m.start()]
+        full = m.group(0)
+        if "/" in full or "$" in prefix or "💰" in prefix:
+            continue
+        if len(raw) <= 2 and not period and not ampm and "時間" not in full:
+            continue
+
+        if len(raw) in [3, 4]:
+            hour = raw[:-2]
+            minute = raw[-2:]
+            candidates.append((period, hour, minute, ampm))
+        elif len(raw) <= 2 and (period or ampm or "時間" in full):
+            candidates.append((period, raw, "00", ampm))
+
+    if not candidates:
+        return ""
+
+    period, hour_s, minute_s, ampm = candidates[0]
+
+    try:
+        hour = int(hour_s)
+        minute = int(minute_s)
+    except ValueError:
+        return ""
+
+    ampm = ampm.lower()
+
+    if ampm == "pm" and hour < 12:
+        hour += 12
+    elif ampm == "am" and hour == 12:
+        hour = 0
+    elif period in ["下午", "晚上"] and hour < 12:
+        hour += 12
+    elif period == "中午" and hour < 12:
+        hour += 12
+    elif period == "凌晨" and hour == 12:
+        hour = 0
+
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return ""
+
+    return f"{hour:02d}:{minute:02d}"
+
+# =====================================================
+# 金額處理
+# =====================================================
+def parse_price(text: str) -> str:
+    # 支援 💰1900、固定💰1900、$900、＄900
+    matches = re.findall(r"(?:固定\s*)?(?:💰|[$＄])\s*([0-9,]+)", text)
+    if not matches:
+        return ""
+    amount = matches[-1].replace(",", "")
+    return f"💰{amount}"
+
+# =====================================================
+# 人數處理
+# =====================================================
+def parse_people(text: str) -> str:
+    # 支援 人數：5、乘坐人數：5、5人
+    total = None
+
+    m = re.search(r"(?:乘坐人數|人數)[:：\s]*([0-9]+)", text)
+    if m:
+        total = int(m.group(1))
+    else:
+        m = re.search(r"([0-9]+)\s*人", text)
+        if m:
+            total = int(m.group(1))
+
+    # 支援 2大2小，總數 4
+    m = re.search(r"(?:乘坐人數|人數)[:：\s]*([0-9]+)\s*大\s*([0-9]+)\s*小", text)
+    if m:
+        total = int(m.group(1)) + int(m.group(2))
+
+    if total is None:
+        return ""
+
+    if total > 4:
+        extra = (total - 4) * 100
+        return f"{total}人 +{extra}"
+
+    # 4人以下不顯示
+    return ""
+
+# =====================================================
+# 備註處理
+# =====================================================
+def parse_notes(text: str) -> str:
+    notes = []
+
+    m = re.search(r"備註[:：\s]*(.*)", text)
+    if m:
+        raw = m.group(1).strip()
+        raw = raw.replace("，", " ").replace(",", " ").replace("、", " ")
+        for part in raw.split():
+            clean = part.strip()
+            if clean and not looks_like_address_tail(clean):
+                notes.append(clean)
+
+    for keyword in NOTE_KEYWORDS:
+        if keyword in text and keyword not in notes:
+            notes.append(keyword)
+
+    if not notes:
+        return ""
+
+    return "".join(f"✅{n}" for n in notes)
+
+# =====================================================
+# 地址處理
+# =====================================================
+def parse_addresses(lines):
+    ups = []
+    downs = []
+
+    for line in lines:
+        clean_line = line.strip()
+
+        # 跳過非地址欄位
+        if re.match(r"^(日期|時間|人數|乘坐人數|手機|電話|行李|航班|航班編號|備註)[:：]", clean_line):
+            continue
+        if re.search(r"(?:💰|[$＄])\s*\d+", clean_line):
+            continue
+
+        addr_type = None
+        addr = ""
+
+        # 上車
+        m = re.match(r"^(?:第?[一二三123]?[\s]*上車(?:地址|地點)?|上車(?:地址|地點)?|上車)\s*[:：]?\s*(.+)$", clean_line)
+        if m:
+            addr_type = "up"
+            addr = m.group(1)
+
+        # 下車
+        if addr_type is None:
+            m = re.match(r"^(?:第?[一二三123]?[\s]*下車(?:地址|地點)?|下車(?:地址|地點)?|下車)\s*[:：]?\s*(.+)$", clean_line)
+            if m:
+                addr_type = "down"
+                addr = m.group(1)
+
+        if addr_type and addr:
+            simplified = simplify_address(addr)
+            if simplified:
+                if addr_type == "up":
+                    ups.append(simplified)
+                else:
+                    downs.append(simplified)
+
+    # 無標籤雙地址：第一行上車、第二行下車
+    if not ups and not downs:
+        address_like = []
+        for line in lines:
+            if is_address_like(line):
+                address_like.append(simplify_address(line))
+        if len(address_like) >= 2:
+            ups.append(address_like[0])
+            downs.append(address_like[1])
+
+    return ups, downs
+
+
+def simplify_address(addr: str) -> str:
+    addr = addr.strip()
+    addr = re.sub(r"^[0-9]{3,5}\s*", "", addr)  # 郵遞區號
+    addr = re.sub(r"^(地址|上車地址|下車地址|上車|下車)\s*[:：]?\s*", "", addr)
+    addr = addr.replace("臺", "台")
+    addr = re.sub(r"\s+", "", addr)
+
+    # 移除 XX里，例如：幸福里、中山里
+    addr = re.sub(r"[^縣市區鄉鎮路街巷弄號]{1,6}里", "", addr)
+
+    # 地標不硬切
+    if not is_address_like(addr):
+        return addr
+
+    # 台北/新北/桃園/北市：移除城市名，保留區後面
+    addr = re.sub(r"^(台北市|北市|新北市|桃園市)", "", addr)
+
+    # 如果地址內還有區，從區名前一段開始保留
+    m = re.search(r"([\u4e00-\u9fff]{1,4}區.+)", addr)
+    if m:
+        addr = m.group(1)
+
+    return addr
+
+
+def is_address_like(s: str) -> bool:
+    s = s.strip()
+    if not s:
+        return False
+
+    # 地標也算目的地，但不要讓單純文字「好」通過
+    landmark_words = ["機場", "桃機", "松機", "航廈", "T1", "T2", "台北101", "台北市政府"]
+    if any(k in s for k in landmark_words):
+        return True
+
+    address_tokens = ["縣", "市", "區", "鄉", "鎮", "路", "街", "巷", "弄", "號", "大道"]
+    return any(k in s for k in address_tokens) and bool(re.search(r"\d", s))
+
+
+def looks_like_address_tail(s: str) -> bool:
+    return bool(re.search(r"(路|街|巷|弄|號|樓|區)", s))
+
+# =====================================================
+# 啟動
+# =====================================================
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
