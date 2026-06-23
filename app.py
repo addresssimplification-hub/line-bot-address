@@ -365,7 +365,7 @@ def callback():
 
                 # 上車
                 for u in ups:
-                    output.append(f"⬆️：{u}")
+                    output.append(f"⬆️{u}")
 
                 # 下車
                 if len(downs) == 1:
