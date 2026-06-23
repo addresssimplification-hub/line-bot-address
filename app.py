@@ -12,7 +12,6 @@ TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 # ======================
 # HEALTH CHECK
 # ======================
-
 @app.route("/")
 def home():
     return "OK"
@@ -25,7 +24,6 @@ def ping():
 # ======================
 # CONFIG
 # ======================
-
 REMOVE_CITIES = ["台北市", "臺北市", "新北市", "桃園市", "北市"]
 
 IGNORE_DATE_WORDS = ["今天", "今日", "當日", "現在", "立即", "馬上", "立刻"]
@@ -33,33 +31,57 @@ IGNORE_TIME_WORDS = ["現在", "立即", "馬上", "立刻"]
 
 
 # ======================
-# CLEAN
+# CLEAN ADDRESS
 # ======================
-
 def clean_address(addr):
+    if not addr:
+        return ""
+
     addr = re.sub(r"^\d{3,5}\s*", "", addr.strip())
+
     for c in REMOVE_CITIES:
         addr = addr.replace(c, "")
-    addr = re.sub(r'^(上車|下車|地址|第二|第三)?[:：]?', '', addr)
+
+    addr = re.sub(r'^(上車|下車|地址|第一|第二|第三|第四|第五)?[:：]?', '', addr)
+
     return addr.strip()
 
 
 # ======================
 # TIME
 # ======================
-
 def format_time(text):
     if not text:
         return ""
 
-    t = text.strip().lower()
+    t = text.strip()
 
     if any(w in t for w in IGNORE_TIME_WORDS):
         return ""
 
     t = t.replace("預約", "").strip()
 
-    m = re.match(r"^(\d{3,4})\s*(am|pm)?$", t)
+    m = re.search(r"下午\s*(\d{1,2})", t)
+    if m:
+        return f"{int(m.group(1)) + 12:02d}:00"
+
+    m = re.search(r"晚上\s*(\d{1,2})", t)
+    if m:
+        return f"{int(m.group(1)) + 12:02d}:00"
+
+    m = re.search(r"傍晚\s*(\d{1,2})", t)
+    if m:
+        return f"{int(m.group(1)) + 12:02d}:00"
+
+    m = re.search(r"早上|上午\s*(\d{1,2})", t)
+    if m:
+        return f"{int(m.group(1)):02d}:00"
+
+    m = re.search(r"凌晨\s*(\d{1,2})", t)
+    if m:
+        return f"{int(m.group(1)):02d}:00"
+
+    m = re.match(r"^(\d{3,4})\s*(am|pm)?$", t.lower())
     if m:
         num = m.group(1)
         ap = m.group(2)
@@ -83,7 +105,6 @@ def format_time(text):
 # ======================
 # DATE
 # ======================
-
 def format_date(text):
     if not text:
         return ""
@@ -114,10 +135,9 @@ def format_date(text):
 # ======================
 # PEOPLE
 # ======================
-
 def parse_people(n):
     try:
-        n = int(n)
+        n = int(re.search(r"\d+", str(n)).group())
     except:
         return ""
 
@@ -131,7 +151,6 @@ def parse_people(n):
 # ======================
 # PRICE
 # ======================
-
 def extract_price(text):
     if not text:
         return ""
@@ -144,45 +163,81 @@ def extract_price(text):
 
 
 # ======================
-# REMARK
+# REMARKS
 # ======================
-
 def extract_remarks(lines):
     r = []
     for l in lines:
         l = l.strip()
         if not l:
             continue
+
         if any(x in l for x in ["電話", "手機", "上車", "下車", "日期", "時間", "人數", "💰"]):
             continue
+
         r.append(l)
+
     return r
 
 
 # ======================
-# ADDRESSES
+# 🚀 AUTO SORT ADDRESSES
 # ======================
-
 def extract_addresses(lines):
-    ups = []
-    downs = []
+    up_map = {}
+    down_map = {}
+
+    num_map = {
+        "第一": 1,
+        "第二": 2,
+        "第三": 3,
+        "第四": 4,
+        "第五": 5
+    }
 
     for l in lines:
         s = l.strip()
         if not s:
             continue
 
+        # ========= 上車 =========
         if "上車" in s:
-            s = re.sub(r"(第二|第三)?上車[:：]?", "", s)
-            s = clean_address(s)
-            if s:
-                ups.append(s)
+            num = None
 
+            for k, v in num_map.items():
+                if k in s:
+                    num = v
+                    break
+
+            addr = re.sub(r"(第一|第二|第三|第四|第五)?上車(地址)?[:：]?", "", s)
+            addr = clean_address(addr)
+
+            if addr:
+                if num:
+                    up_map[num] = addr
+                else:
+                    up_map[len(up_map) + 1] = addr
+
+        # ========= 下車 =========
         elif "下車" in s:
-            s = s.replace("下車地址：", "").replace("下車：", "")
-            s = clean_address(s)
-            if s:
-                downs.append(s)
+            num = None
+
+            for k, v in num_map.items():
+                if k in s:
+                    num = v
+                    break
+
+            addr = re.sub(r"(第一|第二|第三|第四|第五)?下車(地址)?[:：]?", "", s)
+            addr = clean_address(addr)
+
+            if addr:
+                if num:
+                    down_map[num] = addr
+                else:
+                    down_map[len(down_map) + 1] = addr
+
+    ups = [up_map[k] for k in sorted(up_map.keys())]
+    downs = [down_map[k] for k in sorted(down_map.keys())]
 
     return ups, downs
 
@@ -193,8 +248,10 @@ def fallback(lines):
         l = l.strip()
         if not l:
             continue
+
         if any(x in l for x in ["日期", "時間", "人數", "備註", "電話", "手機"]):
             continue
+
         a.append(clean_address(l))
 
     if len(a) >= 2:
@@ -204,9 +261,8 @@ def fallback(lines):
 
 
 # ======================
-# CALLBACK (NO DIE)
+# CALLBACK
 # ======================
-
 @app.route("/callback", methods=["POST"])
 def callback():
     try:
@@ -229,16 +285,15 @@ def callback():
                 time = ""
                 people = ""
                 price = ""
+                remarks = []
 
                 ups, downs = extract_addresses(lines)
 
                 if not ups and not downs:
                     ups, downs = fallback(lines)
 
-                remarks = []
-
-                for i, l in enumerate(lines):
-                    s = l.strip()
+                for s in lines:
+                    s = s.strip()
 
                     if "日期" in s:
                         date = format_date(s.split("：")[-1])
@@ -252,8 +307,15 @@ def callback():
                     elif "💰" in s or "價格" in s:
                         price = extract_price(s)
 
+                    elif re.fullmatch(r"\d{3,6}", s):
+                        price = f"💰{s}"
+
                     elif "備註" in s:
-                        remarks = extract_remarks(lines[i+1:])
+                        remark = s.replace("備註：", "").replace("備註:", "").strip()
+                        if remark and remark not in ["無", "沒有", "無備註"]:
+                            remarks.append(remark)
+
+                remarks.extend(extract_remarks(lines))
 
                 output = []
 
@@ -264,39 +326,36 @@ def callback():
                 elif time:
                     output.append(time)
 
-                for u in ups:
-                    output.append(f"⬆️上車：{u}")
+                for i, u in enumerate(ups, 1):
+                    output.append(f"⬆️上車{i}：{u}")
 
-                for d in downs:
-                    output.append(f"下車地址：{d}")
+                for i, d in enumerate(downs, 1):
+                    output.append(f"⬇️下車{i}：{d}")
 
                 ptxt = parse_people(people)
                 if ptxt:
                     output.append(ptxt)
 
                 if remarks:
-                    output.append("｜✅" + " ".join(remarks))
+                    output.append("｜✅ " + " ".join(remarks))
 
                 if price:
                     output.append(price)
 
                 final = "\n".join(output) or "無內容"
 
-                try:
-                    requests.post(
-                        "https://api.line.me/v2/bot/message/reply",
-                        headers={
-                            "Authorization": f"Bearer {TOKEN}",
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "replyToken": reply_token,
-                            "messages": [{"type": "text", "text": final}]
-                        },
-                        timeout=5
-                    )
-                except:
-                    pass
+                requests.post(
+                    "https://api.line.me/v2/bot/message/reply",
+                    headers={
+                        "Authorization": f"Bearer {TOKEN}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "replyToken": reply_token,
+                        "messages": [{"type": "text", "text": final}]
+                    },
+                    timeout=5
+                )
 
             except Exception:
                 print(traceback.format_exc())
@@ -310,12 +369,7 @@ def callback():
 
 
 # ======================
-# START SAFE
+# START
 # ======================
-
 if __name__ == "__main__":
-    app.run(
-        host="0.0.0.0",
-        port=10000,
-        threaded=True
-    )
+    app.run(host="0.0.0.0", port=10000, threaded=True)
