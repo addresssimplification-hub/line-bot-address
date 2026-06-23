@@ -159,14 +159,14 @@ def parse_people(n):
     return f"{n}人 +{(n-4)*100}"
 
 # ======================
-# REMARKS（已修正不污染）
+# REMARKS（完全乾淨版）
 # ======================
 
 def extract_remarks(lines):
     bad_words = [
         "電話", "手機", "麻煩", "填寫", "提供", "完整", "正確",
         "日期", "時間", "人數", "💰", "地址",
-        "上車", "下車", "行李", "乘坐", "第二", "第三"
+        "上車", "下車", "行李", "乘坐", "第二", "第三", "備註"
     ]
 
     tags = []
@@ -252,7 +252,7 @@ def callback():
                         price = extract_price(s)
 
                 # ======================
-                # OUTPUT
+                # OUTPUT（你要的格式）
                 # ======================
                 output = []
 
@@ -265,19 +265,21 @@ def callback():
                 for u in ups:
                     output.append(f"⬆️：{u}")
 
-                # 🔥 多下車格式修正
+                # 下車
                 if len(downs) == 1:
                     output.append(f"下車地點：{downs[0]}")
                 elif len(downs) > 1:
                     output.append(f"下車地點：{downs[0]}")
                     for d in downs[1:]:
-                        output.append(f"🔽{d}")
+                        output.append(f"🔽{clean_address(d)}")
 
                 ptxt = parse_people(people)
                 remark_txt = extract_remarks(lines)
 
+                # 🔥 關鍵：分行輸出
                 if ptxt and remark_txt:
-                    output.append(f"{ptxt}｜{remark_txt}")
+                    output.append(ptxt + "｜")
+                    output.append(remark_txt)
                 elif ptxt:
                     output.append(ptxt)
                 elif remark_txt:
