@@ -17,7 +17,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-BOT_VERSION = "v2.7"
+BOT_VERSION = "v2.8"
 GROUP_ID = "C68622c8e7215bffc165b1f657c148b4e"
 
 
@@ -27,7 +27,7 @@ def notify_startup():
         line_bot_api.push_message(
             GROUP_ID,
             TextSendMessage(
-                text=f"系統已啟動 ✅\n版本：{BOT_VERSION}\n時間：{now}"
+                text=f"系統已啟動 ✅\nCC專屬助理已上線 ✅\n版本：{BOT_VERSION}\n時間：{now}"
             )
         )
     except Exception as e:
@@ -36,19 +36,30 @@ def notify_startup():
 
 def is_booking_text(text):
     keywords = [
-        "上車", "下車", "上車地", "下車地", "上：", "下：",
+        "上車", "下車", "上車地", "下車地", "上車地點", "下車地點",
+        "⬆️", "🔽",
         "日期", "時間", "人數", "乘坐人數",
-        "機場", "桃機", "航廈", "悠遊GO", "預約",
+        "機場", "桃機", "航廈", "預約",
         "💰", "$", "＄", "固定"
     ]
-    return any(k in text for k in keywords)
+
+    if any(k in text for k in keywords):
+        return True
+
+    if re.search(r"(^|\n)\s*上\s*[:： ]", text):
+        return True
+
+    if re.search(r"(^|\n)\s*下\s*[:： ]", text):
+        return True
+
+    return False
 
 
 def clean_line(line):
     line = line.strip()
     line = re.sub(r"^[\s\-—–_]+", "", line)
     line = re.sub(
-        r"^(日期|時間|第二上車|第三上車|第二下車|第三下車|上車地址|下車地址|上車地|下車地|上車|下車|上|下|地址)\s*[:：]?\s*",
+        r"^(日期|時間|第二上車|第三上車|第二下車|第三下車|上車地址|下車地址|上車地點|下車地點|上車地|下車地|上車|下車|上|下|地址|⬆️|🔽)\s*[:：]?\s*",
         "",
         line
     )
@@ -241,9 +252,9 @@ def parse_addresses(text):
     lines = [l.strip() for l in text.splitlines() if l.strip()]
 
     for line in lines:
-        if re.match(r"^(第二上車|第三上車|上車地址|上車地|上車|上)\s*[:：]?\s*", line):
+        if re.match(r"^(第二上車|第三上車|上車地址|上車地點|上車地|上車|上|⬆️)\s*[:：]?\s*", line):
             addr = re.sub(
-                r"^(第二上車|第三上車|上車地址|上車地|上車|上)\s*[:：]?\s*",
+                r"^(第二上車|第三上車|上車地址|上車地點|上車地|上車|上|⬆️)\s*[:：]?\s*",
                 "",
                 line
             ).strip()
@@ -251,9 +262,9 @@ def parse_addresses(text):
             if addr:
                 pickups.append(addr)
 
-        elif re.match(r"^(第二下車|第三下車|下車地址|下車地|下車|下)\s*[:：]?\s*", line):
+        elif re.match(r"^(第二下車|第三下車|下車地址|下車地點|下車地|下車|下|🔽)\s*[:：]?\s*", line):
             addr = re.sub(
-                r"^(第二下車|第三下車|下車地址|下車地|下車|下)\s*[:：]?\s*",
+                r"^(第二下車|第三下車|下車地址|下車地點|下車地|下車|下|🔽)\s*[:：]?\s*",
                 "",
                 line
             ).strip()
