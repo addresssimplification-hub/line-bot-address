@@ -328,6 +328,16 @@ def callback():
 def handle_message(event):
     text = event.message.text.strip()
 
+    # 顯示自己的 LINE User ID
+    if text == "#我的ID":
+        user_id = getattr(event.source, "user_id", "找不到")
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=f"你的 User ID：\n{user_id}")
+        )
+        return
+
     if not is_booking_text(text):
         return
 
