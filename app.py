@@ -20,11 +20,7 @@ def notify_startup():
         now = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d %H:%M:%S")
         line_bot_api.push_message(
             GROUP_ID,
-            TextSendMessage(text=f"系統已啟動 ✅\n
-            CC專屬助理已上線 ✅\n
-            有任何問題請洽CC北鼻✅\n
-            版本：{BOT_VERSION}\n
-            時間：{now}")
+            TextSendMessage(text=f"系統已啟動 ✅\nCC專屬助理已上線 ✅\n有任何問題請洽CC北鼻✅\n版本：{BOT_VERSION}\n時間：{now}")
         )
     except Exception as e:
         print("Startup notify error:", e)
