@@ -17,6 +17,22 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
+BOT_VERSION = "v2.7"
+GROUP_ID = "C68622c8e7215bffc165b1f657c148b4e"
+
+
+def notify_startup():
+    try:
+        now = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d %H:%M:%S")
+        line_bot_api.push_message(
+            GROUP_ID,
+            TextSendMessage(
+                text=f"系統已啟動 ✅\n版本：{BOT_VERSION}\n時間：{now}"
+            )
+        )
+    except Exception as e:
+        print("Startup notify error:", e)
+
 
 def is_booking_text(text):
     keywords = [
@@ -42,13 +58,8 @@ def clean_line(line):
 def clean_address(addr):
     addr = addr.strip()
     addr = re.sub(r"^\d{3,5}", "", addr)
-
-    # 移除城市名稱，但保留區
     addr = re.sub(r"^(台北市|臺北市|新北市|桃園市|北市)", "", addr)
-
-    # 只移除區後面的 XX里，保留區名
     addr = re.sub(r"(?<=[區鄉鎮市])[\u4e00-\u9fff]{1,6}里", "", addr)
-
     addr = re.sub(r"\s+", "", addr)
     return addr.strip()
 
@@ -57,6 +68,9 @@ def parse_date(text):
     today = datetime.now(ZoneInfo("Asia/Taipei"))
     current_month = today.month
     current_day = today.day
+
+    if re.search(r"日期\s*[:：]?\s*(當日免填|今天|今日|現在|立即|馬上|立刻)", text):
+        return ""
 
     m = re.search(r"日期\s*[:：]?\s*(\d{1,2})/(\d{1,2})", text)
     if m:
@@ -76,35 +90,37 @@ def parse_date(text):
     return ""
 
 
+def convert_time(period, hour, minute):
+    if period in ["下午", "晚上"] and hour < 12:
+        hour += 12
+    elif period == "中午" and hour < 12:
+        hour += 12
+    elif period == "凌晨" and hour == 12:
+        hour = 0
+
+    return f"{hour:02d}:{minute:02d}"
+
+
 def parse_time(text):
-    if re.search(r"時間\s*[:：]?\s*(現在|立即|馬上|立刻)", text):
+    if re.search(r"時間\s*[:：]?\s*(現在|立即|馬上|立刻)?\s*$", text, re.MULTILINE):
         return ""
 
-    # 早上5:30 / 下午6:30 / 晚上9:05
     m = re.search(
         r"時間\s*[:：]?\s*(早上|上午|下午|晚上|中午|凌晨)?\s*(\d{1,2})\s*[:：]\s*(\d{2})",
         text,
         re.I
     )
     if m:
-        period = m.group(1) or ""
-        hour = int(m.group(2))
-        minute = int(m.group(3))
-        return convert_time(period, hour, minute)
+        return convert_time(m.group(1) or "", int(m.group(2)), int(m.group(3)))
 
-    # 晚上8點 / 下午3點 / 早上5點
     m = re.search(
         r"時間\s*[:：]?\s*(早上|上午|下午|晚上|中午|凌晨)?\s*(\d{1,2})\s*點",
         text,
         re.I
     )
     if m:
-        period = m.group(1) or ""
-        hour = int(m.group(2))
-        minute = 0
-        return convert_time(period, hour, minute)
+        return convert_time(m.group(1) or "", int(m.group(2)), 0)
 
-    # 0600pm / 0530am
     m = re.search(r"時間\s*[:：]?\s*(\d{1,2})(\d{2})\s*(am|pm|AM|PM)", text)
     if m:
         hour = int(m.group(1))
@@ -118,7 +134,6 @@ def parse_time(text):
 
         return f"{hour:02d}:{minute:02d}"
 
-    # 0500 / 1830
     m = re.search(r"時間\s*[:：]?\s*(\d{1,2})(\d{2})", text)
     if m:
         hour = int(m.group(1))
@@ -127,17 +142,6 @@ def parse_time(text):
             return f"{hour:02d}:{minute:02d}"
 
     return ""
-
-
-def convert_time(period, hour, minute):
-    if period in ["下午", "晚上"] and hour < 12:
-        hour += 12
-    elif period == "中午" and hour < 12:
-        hour += 12
-    elif period == "凌晨" and hour == 12:
-        hour = 0
-
-    return f"{hour:02d}:{minute:02d}"
 
 
 def parse_price(text):
@@ -156,7 +160,11 @@ def parse_price(text):
 
 
 def parse_people(text):
-    m = re.search(r"(?:人數|乘坐人數)\s*[:：]?\s*(.+)", text)
+    m = re.search(
+        r"^(?:人數|乘坐人數)\s*[:：]?\s*(.*)$",
+        text,
+        re.MULTILINE
+    )
 
     if not m:
         m = re.search(r"(\d+)\s*人", text)
@@ -166,14 +174,19 @@ def parse_people(text):
             return ""
     else:
         raw = m.group(1).strip()
+
+        if raw == "":
+            return ""
+
         nums = re.findall(r"(\d+)\s*(大|小|人)?", raw)
 
         if not nums:
             return ""
 
-        people = 0
-        for n, _ in nums:
-            people += int(n)
+        people = sum(int(n) for n, _ in nums)
+
+        if people > 20:
+            return ""
 
     if people > 4:
         extra = (people - 4) * 100
@@ -185,11 +198,20 @@ def parse_people(text):
 def parse_notes(text):
     lines = text.splitlines()
 
+    ignore_notes = [
+        "無", "沒有", "無備註",
+        "N", "n", "NO", "No", "no",
+        "-", "--", "免"
+    ]
+
     for line in lines:
         if re.match(r"^\s*(備註|其他備註)\s*[:：]?", line):
             note = re.sub(r"^\s*(備註|其他備註)\s*[:：]?\s*", "", line).strip()
 
             if not note:
+                return ""
+
+            if note in ignore_notes:
                 return ""
 
             if re.search(r"^(?:💰|[$＄]|固定)\s*\d+", note):
@@ -200,7 +222,8 @@ def parse_notes(text):
 
             parts = [
                 p for p in parts
-                if not re.search(r"^(?:💰|[$＄]|固定)\s*\d+", p)
+                if p not in ignore_notes
+                and not re.search(r"^(?:💰|[$＄]|固定)\s*\d+", p)
             ]
 
             if not parts:
@@ -218,11 +241,6 @@ def parse_addresses(text):
     lines = [l.strip() for l in text.splitlines() if l.strip()]
 
     for line in lines:
-        # 上車格式：
-        # 上車地址：xxx / 上車地址 xxx / 上車地址xxx
-        # 上車地：xxx / 上車地 xxx / 上車地xxx
-        # 上車：xxx / 上車 xxx / 上車xxx
-        # 上：xxx / 上 xxx / 上xxx
         if re.match(r"^(第二上車|第三上車|上車地址|上車地|上車|上)\s*[:：]?\s*", line):
             addr = re.sub(
                 r"^(第二上車|第三上車|上車地址|上車地|上車|上)\s*[:：]?\s*",
@@ -233,11 +251,6 @@ def parse_addresses(text):
             if addr:
                 pickups.append(addr)
 
-        # 下車格式：
-        # 下車地址：xxx / 下車地址 xxx / 下車地址xxx
-        # 下車地：xxx / 下車地 xxx / 下車地xxx
-        # 下車：xxx / 下車 xxx / 下車xxx
-        # 下：xxx / 下 xxx / 下xxx
         elif re.match(r"^(第二下車|第三下車|下車地址|下車地|下車|下)\s*[:：]?\s*", line):
             addr = re.sub(
                 r"^(第二下車|第三下車|下車地址|下車地|下車|下)\s*[:：]?\s*",
@@ -248,7 +261,6 @@ def parse_addresses(text):
             if addr:
                 dropoffs.append(addr)
 
-    # 無標籤雙行地址：第一行上車、第二行下車
     if not pickups and not dropoffs:
         address_like = []
         for line in lines:
@@ -328,16 +340,6 @@ def callback():
 def handle_message(event):
     text = event.message.text.strip()
 
-    # 顯示自己的 LINE User ID
-    if text == "#我的ID":
-        user_id = getattr(event.source, "user_id", "找不到")
-
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=f"你的 User ID：\n{user_id}")
-        )
-        return
-
     if not is_booking_text(text):
         return
 
@@ -350,6 +352,9 @@ def handle_message(event):
         event.reply_token,
         TextSendMessage(text=result)
     )
+
+
+notify_startup()
 
 
 if __name__ == "__main__":
