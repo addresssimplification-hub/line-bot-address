@@ -429,7 +429,7 @@ def format_booking(text):
         if line:
             line += "｜" + note_text
         else:
-            line += "｜" + note_text
+            line += note_text
 
     if line:
         output.append(line)
