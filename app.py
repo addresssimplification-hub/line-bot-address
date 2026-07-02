@@ -15,7 +15,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-BOT_VERSION = "v3.0.0"
+BOT_VERSION = "v3.0.1"
 GROUP_ID = "C68622c8e7215bffc165b1f657c148b4e"
 
 
@@ -68,12 +68,14 @@ def clean_address(addr):
     addr = addr.strip()
     addr = re.sub(r"^\d{3,5}", "", addr)
 
+    # 只移除正式城市名稱，避免「桃園區」被誤刪成「區」
     addr = re.sub(
-        r"^(台北市|臺北市|新北市|桃園市|北市|台北|臺北|新北|桃園)",
+        r"^(台北市|臺北市|新北市|桃園市|北市)",
         "",
         addr
     )
 
+    # 移除區/鄉/鎮/市後面的里名，保留區名
     addr = re.sub(r"(?<=[區鄉鎮市])[\u4e00-\u9fff]{1,6}里", "", addr)
 
     # 桃園機場第一航 / 第二航 → 第一航廈 / 第二航廈
@@ -348,7 +350,7 @@ def parse_addresses(text):
                         i -= 1
                         break
 
-                    if re.search(r"(市|區|路|街|巷|弄|號|機場|航廈|桃機|T1|T2)", next_line):
+                    if re.search(r"(市|區|鄉|鎮|路|街|巷|弄|號|機場|航廈|桃機|T1|T2)", next_line):
                         addr = clean_address(next_line)
                         if addr:
                             pickups.append(addr)
@@ -375,7 +377,7 @@ def parse_addresses(text):
                         i -= 1
                         break
 
-                    if re.search(r"(市|區|路|街|巷|弄|號|機場|航廈|桃機|T1|T2)", next_line):
+                    if re.search(r"(市|區|鄉|鎮|路|街|巷|弄|號|機場|航廈|桃機|T1|T2)", next_line):
                         addr = clean_address(next_line)
                         if addr:
                             dropoffs.append(addr)
@@ -387,7 +389,7 @@ def parse_addresses(text):
     if not pickups and not dropoffs:
         address_like = []
         for line in lines:
-            if re.search(r"(市|區|路|街|巷|弄|號|機場|航廈|桃機|T1|T2)", line):
+            if re.search(r"(市|區|鄉|鎮|路|街|巷|弄|號|機場|航廈|桃機|T1|T2)", line):
                 address_like.append(clean_address(clean_line(line)))
 
         if len(address_like) >= 2:
