@@ -15,7 +15,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-BOT_VERSION = "v3.0.1"
+BOT_VERSION = "v3.0.2"
 GROUP_ID = "C68622c8e7215bffc165b1f657c148b4e"
 
 
@@ -35,7 +35,7 @@ def notify_startup():
 def is_booking_text(text):
     keywords = [
         "上車", "下車", "上車地", "下車地", "上車地點", "下車地點",
-        "⬆️", "🔽",
+        "⬆️", "🔽", "🔺", "🔻",
         "日期", "時間", "人數", "乘坐人數", "乘車人數",
         "機場", "桃機", "航廈", "預約",
         "💰", "$", "＄", "固定"
@@ -57,7 +57,7 @@ def clean_line(line):
     line = line.strip()
     line = re.sub(r"^[\s\-—–_]+", "", line)
     line = re.sub(
-        r"^(日期|時間|第二上車|第三上車|第二下車|第三下車|上車地址|下車地址|上車地點|下車地點|上車地|下車地|上車|下車|上|下|地址|⬆️|🔽)\s*[:：]?\s*",
+        r"^(日期|時間|第二上車|第三上車|第二下車|第三下車|上車地址|下車地址|上車地點|下車地點|上車地|下車地|上車|下車|上|下|地址|🔺上車|🔻下車|⬆️|🔽|🔺|🔻)\s*[:：]?\s*",
         "",
         line
     )
@@ -323,8 +323,8 @@ def parse_addresses(text):
         r"^(日期|時間|人數|乘坐人數|乘車人數|手機號碼|電話|行李數量|行李數|備註|其他備註|固定|💰|[$＄])\s*[:：]?"
     )
 
-    pickup_label = r"^(第二上車|第三上車|上車地址|上車地點|上車地|上車|上|⬆️)\s*[:：]?\s*"
-    dropoff_label = r"^(第二下車|第三下車|下車地址|下車地點|下車地|下車|下|🔽)\s*[:：]?\s*"
+    pickup_label = r"^(第二上車|第三上車|上車地址|上車地點|上車地|上車|上|🔺上車|⬆️|🔺)\s*[:：]?\s*"
+    dropoff_label = r"^(第二下車|第三下車|下車地址|下車地點|下車地|下車|下|🔻下車|🔽|🔻)\s*[:：]?\s*"
 
     i = 0
     while i < len(lines):
