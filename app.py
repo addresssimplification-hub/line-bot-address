@@ -15,7 +15,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-BOT_VERSION = "v3.0.2"
+BOT_VERSION = "v3.0.3"
 GROUP_ID = "C68622c8e7215bffc165b1f657c148b4e"
 
 
@@ -36,6 +36,7 @@ def is_booking_text(text):
     keywords = [
         "上車", "下車", "上車地", "下車地", "上車地點", "下車地點",
         "⬆️", "🔽", "🔺", "🔻",
+        "目的", "目的地", "目的●",
         "日期", "時間", "人數", "乘坐人數", "乘車人數",
         "機場", "桃機", "航廈", "預約",
         "💰", "$", "＄", "固定"
@@ -57,7 +58,7 @@ def clean_line(line):
     line = line.strip()
     line = re.sub(r"^[\s\-—–_]+", "", line)
     line = re.sub(
-        r"^(日期|時間|第二上車|第三上車|第二下車|第三下車|上車地址|下車地址|上車地點|下車地點|上車地|下車地|上車|下車|上|下|地址|🔺上車|🔻下車|⬆️|🔽|🔺|🔻)\s*[:：]?\s*",
+        r"^(日期|時間|第一個上車點|第二個上車點|第三個上車點|第一個下車點|第二個下車點|第三個下車點|第二上車|第三上車|第二下車|第三下車|上車地址|下車地址|上車地點|下車地點|上車地|下車地|上車|下車|目的地|目的●|目的|上|下|地址|🔺上車|🔻下車|⬆️|🔽|🔺|🔻)\s*[:：●]?\s*",
         "",
         line
     )
@@ -71,6 +72,13 @@ def clean_address(addr):
     # 只移除正式城市名稱，避免「桃園區」被誤刪成「區」
     addr = re.sub(
         r"^(台北市|臺北市|新北市|桃園市|北市)",
+        "",
+        addr
+    )
+
+    # 處理沒有「市」的台北／臺北／新北簡稱，但保留桃園區
+    addr = re.sub(
+        r"^(台北|臺北|新北)(?=[\u4e00-\u9fff]{1,4}區)",
         "",
         addr
     )
@@ -129,6 +137,17 @@ def parse_time(text):
         re.MULTILINE
     ):
         return ""
+
+    # 預約4:00 / 預約 4:00 / 預約：4:00
+    m = re.search(
+        r"預約\s*[:：]?\s*(\d{1,2})\s*[:：]\s*(\d{2})",
+        text
+    )
+    if m:
+        hour = int(m.group(1))
+        minute = int(m.group(2))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return f"{hour:02d}:{minute:02d}"
 
     # 08:35pm / 8:35 PM
     m = re.search(
@@ -278,6 +297,7 @@ def parse_notes(text):
     lines = text.splitlines()
 
     ignore_notes = [
+        "0",
         "無", "沒有", "無備註",
         "N", "n", "NO", "No", "no",
         "-", "--", "免"
@@ -323,8 +343,8 @@ def parse_addresses(text):
         r"^(日期|時間|人數|乘坐人數|乘車人數|手機號碼|電話|行李數量|行李數|備註|其他備註|固定|💰|[$＄])\s*[:：]?"
     )
 
-    pickup_label = r"^(第二上車|第三上車|上車地址|上車地點|上車地|上車|上|🔺上車|⬆️|🔺)\s*[:：]?\s*"
-    dropoff_label = r"^(第二下車|第三下車|下車地址|下車地點|下車地|下車|下|🔻下車|🔽|🔻)\s*[:：]?\s*"
+    pickup_label = r"^(第一個上車點|第二個上車點|第三個上車點|第二上車|第三上車|上車地址|上車地點|上車地|上車|上|🔺上車|⬆️|🔺)\s*[:：●]?\s*"
+    dropoff_label = r"^(第一個下車點|第二個下車點|第三個下車點|第二下車|第三下車|下車地址|下車地點|下車地|下車|目的地|目的●|目的|下|🔻下車|🔽|🔻)\s*[:：●]?\s*"
 
     i = 0
     while i < len(lines):
@@ -332,6 +352,7 @@ def parse_addresses(text):
 
         if re.match(pickup_label, line):
             addr = re.sub(pickup_label, "", line).strip()
+            addr = re.sub(r"^[：:●]+\s*", "", addr)
 
             if addr:
                 addr = clean_address(addr)
@@ -359,6 +380,7 @@ def parse_addresses(text):
 
         elif re.match(dropoff_label, line):
             addr = re.sub(dropoff_label, "", line).strip()
+            addr = re.sub(r"^[：:●]+\s*", "", addr)
 
             if addr:
                 addr = clean_address(addr)
