@@ -15,7 +15,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-BOT_VERSION = "v3.0.3"
+BOT_VERSION = "v3.0.4"
 GROUP_ID = "C68622c8e7215bffc165b1f657c148b4e"
 
 
@@ -32,6 +32,7 @@ def notify_startup():
         print("Startup notify error:", e)
 
 
+
 def is_booking_text(text):
     keywords = [
         "上車", "下車", "上車地", "下車地", "上車地點", "下車地點",
@@ -39,6 +40,7 @@ def is_booking_text(text):
         "目的", "目的地", "目的●",
         "日期", "時間", "人數", "乘坐人數", "乘車人數",
         "機場", "桃機", "航廈", "預約",
+        "接機", "送機", "航班",
         "💰", "$", "＄", "固定"
     ]
 
@@ -51,8 +53,11 @@ def is_booking_text(text):
     if re.search(r"(^|\n)\s*下\s*[:： ]", text):
         return True
 
-    return False
+    # 極簡格式：8/9 2200
+    if re.search(r"(^|\n)\s*\d{1,2}/\d{1,2}\s+\d{4}\s*($|\n)", text):
+        return True
 
+    return False
 
 def clean_line(line):
     line = line.strip()
@@ -65,8 +70,10 @@ def clean_line(line):
     return line.strip()
 
 
+
 def clean_address(addr):
     addr = addr.strip()
+    addr = re.sub(r"^[：:●\s]+", "", addr)
     addr = re.sub(r"^\d{3,5}", "", addr)
 
     # 只移除正式城市名稱，避免「桃園區」被誤刪成「區」
@@ -76,18 +83,43 @@ def clean_address(addr):
         addr
     )
 
-    # 處理沒有「市」的台北／臺北／新北簡稱，但保留桃園區
+    # 處理沒有「市」的台北／臺北／新北簡稱
     addr = re.sub(
         r"^(台北|臺北|新北)(?=[\u4e00-\u9fff]{1,4}區)",
         "",
         addr
     )
 
-    # 移除區/鄉/鎮/市後面的里名，保留區名
+    # 移除區／鄉／鎮／市後面的里名，保留行政區
     addr = re.sub(r"(?<=[區鄉鎮市])[\u4e00-\u9fff]{1,6}里", "", addr)
 
-    # 桃園機場第一航 / 第二航 → 第一航廈 / 第二航廈
+    # 第一航／第二航補成航廈
     addr = re.sub(r"(第一|第二)航(?!廈)", r"\1航廈", addr)
+
+    # 單獨的航廈名稱補成桃園航廈
+    if re.fullmatch(r"第一航廈", addr):
+        addr = "桃園第一航廈"
+    elif re.fullmatch(r"第二航廈", addr):
+        addr = "桃園第二航廈"
+    elif re.fullmatch(r"(?i:T1)", addr):
+        addr = "桃園第一航廈"
+    elif re.fullmatch(r"(?i:T2)", addr):
+        addr = "桃園第二航廈"
+
+    # 常見行政區省略「區」時自動補上
+    districts = [
+        "中山", "松山", "大同", "萬華", "信義", "內湖", "南港",
+        "士林", "北投", "文山", "中正", "大安",
+        "板橋", "新莊", "三重", "中和", "永和", "土城", "樹林",
+        "汐止", "蘆洲", "泰山", "林口", "淡水", "新店", "五股",
+        "深坑", "三峽", "鶯歌", "瑞芳", "金山", "萬里",
+        "中壢", "平鎮", "八德", "龜山", "蘆竹", "大溪", "楊梅",
+        "龍潭", "大園", "觀音", "新屋"
+    ]
+    for district in sorted(districts, key=len, reverse=True):
+        if re.match(rf"^{district}(?!區)", addr):
+            addr = district + "區" + addr[len(district):]
+            break
 
     addr = re.sub(r"\s+", "", addr)
     return addr.strip()
@@ -98,10 +130,31 @@ def parse_date(text):
     current_month = today.month
     current_day = today.day
 
-    if re.search(r"日期\s*[:：]?\s*(當日免填|今天|今日|現在|立即|馬上|立刻)", text):
+    date_label = r"日期(?:\s*\([^)]*\)|\s*（[^）]*）)?"
+
+    if re.search(
+        rf"{date_label}\s*[:：]?\s*(當日免填|今日免填|今天|今日|現在|立即|馬上|立刻)",
+        text
+    ):
         return ""
 
-    m = re.search(r"日期\s*[:：]?\s*(\d{1,2})/(\d{1,2})", text)
+    # 完整年份：2026/7/30、2026-07-30
+    m = re.search(
+        rf"{date_label}\s*[:：]?\s*(\d{{4}})[/-](\d{{1,2}})[/-](\d{{1,2}})",
+        text
+    )
+    if m:
+        month = int(m.group(2))
+        day = int(m.group(3))
+        if month == current_month and day == current_day:
+            return ""
+        return f"{month}/{day}"
+
+    # 月／日
+    m = re.search(
+        rf"{date_label}\s*[:：]?\s*(\d{{1,2}})/(\d{{1,2}})",
+        text
+    )
     if m:
         month = int(m.group(1))
         day = int(m.group(2))
@@ -109,15 +162,27 @@ def parse_date(text):
             return ""
         return f"{month}/{day}"
 
-    m = re.search(r"日期\s*[:：]?\s*(\d{1,2})\s*(號|日)?", text)
+    # 單獨日期
+    m = re.search(
+        rf"{date_label}\s*[:：]?\s*(\d{{1,2}})\s*(號|日)?",
+        text
+    )
     if m:
         day = int(m.group(1))
         if day == current_day:
             return ""
         return f"{current_month}/{day}"
 
-    return ""
+    # 極簡格式：8/9 2200
+    m = re.search(r"(?m)^\s*(\d{1,2})/(\d{1,2})(?=\s+\d{4}\s*$)", text)
+    if m:
+        month = int(m.group(1))
+        day = int(m.group(2))
+        if month == current_month and day == current_day:
+            return ""
+        return f"{month}/{day}"
 
+    return ""
 
 def convert_time(period, hour, minute):
     if period in ["下午", "晚上"] and hour < 12:
@@ -130,9 +195,12 @@ def convert_time(period, hour, minute):
     return f"{hour:02d}:{minute:02d}"
 
 
+
 def parse_time(text):
+    time_label = r"時間(?:\s*\([^)]*\)|\s*（[^）]*）)?"
+
     if re.search(
-        r"時間\s*[:：]?\s*(現在|立即|馬上|立刻|24H|24h|全天|全天候)?\s*$",
+        rf"{time_label}\s*[:：]?\s*(現在|即時免填|現在免填|立即|馬上|立刻|24H|24h|全天|全天候)?\s*$",
         text,
         re.MULTILINE
     ):
@@ -151,8 +219,9 @@ def parse_time(text):
 
     # 08:35pm / 8:35 PM
     m = re.search(
-        r"時間\s*[:：]?\s*(\d{1,2})\s*[:：]\s*(\d{2})\s*(am|pm|AM|PM)",
-        text
+        rf"{time_label}\s*[:：]?\s*(\d{{1,2}})\s*[:：]\s*(\d{{2}})\s*(am|pm)",
+        text,
+        re.I
     )
     if m:
         hour = int(m.group(1))
@@ -168,16 +237,16 @@ def parse_time(text):
 
     # 早上5:30 / 下午6:30 / 晚上9:05
     m = re.search(
-        r"時間\s*[:：]?\s*(早上|上午|下午|晚上|中午|凌晨)?\s*(\d{1,2})\s*[:：]\s*(\d{2})",
+        rf"{time_label}\s*[:：]?\s*(早上|上午|下午|晚上|中午|凌晨)?\s*(\d{{1,2}})\s*[:：]\s*(\d{{2}})",
         text,
         re.I
     )
     if m:
         return convert_time(m.group(1) or "", int(m.group(2)), int(m.group(3)))
 
-    # 晚上8點 / 下午3點 / 早上5點
+    # 晚上8點 / 下午3點
     m = re.search(
-        r"時間\s*[:：]?\s*(早上|上午|下午|晚上|中午|凌晨)?\s*(\d{1,2})\s*點",
+        rf"{time_label}\s*[:：]?\s*(早上|上午|下午|晚上|中午|凌晨)?\s*(\d{{1,2}})\s*點",
         text,
         re.I
     )
@@ -185,7 +254,11 @@ def parse_time(text):
         return convert_time(m.group(1) or "", int(m.group(2)), 0)
 
     # 0600pm / 0530am
-    m = re.search(r"時間\s*[:：]?\s*(\d{1,2})(\d{2})\s*(am|pm|AM|PM)", text)
+    m = re.search(
+        rf"{time_label}\s*[:：]?\s*(\d{{1,2}})(\d{{2}})\s*(am|pm)",
+        text,
+        re.I
+    )
     if m:
         hour = int(m.group(1))
         minute = int(m.group(2))
@@ -199,7 +272,15 @@ def parse_time(text):
         return f"{hour:02d}:{minute:02d}"
 
     # 0500 / 1830
-    m = re.search(r"時間\s*[:：]?\s*(\d{1,2})(\d{2})", text)
+    m = re.search(rf"{time_label}\s*[:：]?\s*(\d{{1,2}})(\d{{2}})", text)
+    if m:
+        hour = int(m.group(1))
+        minute = int(m.group(2))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return f"{hour:02d}:{minute:02d}"
+
+    # 極簡格式：8/9 2200
+    m = re.search(r"(?m)^\s*\d{1,2}/\d{1,2}\s+(\d{2})(\d{2})\s*$", text)
     if m:
         hour = int(m.group(1))
         minute = int(m.group(2))
@@ -207,7 +288,6 @@ def parse_time(text):
             return f"{hour:02d}:{minute:02d}"
 
     return ""
-
 
 def parse_price(text):
     patterns = [
@@ -255,6 +335,7 @@ def chinese_num_to_int(s):
     return mapping.get(s, 0)
 
 
+
 def parse_people(text):
     m = re.search(
         r"^(?:人數|乘坐人數|乘車人數)\s*[:：]?\s*(.*)$",
@@ -262,29 +343,37 @@ def parse_people(text):
         re.MULTILINE
     )
 
-    if not m:
-        m = re.search(r"([0-9一二兩三四五六七八九十]+)\s*人", text)
-        if m:
-            people = chinese_num_to_int(m.group(1))
-        else:
-            return ""
-    else:
+    raw = ""
+    if m:
         raw = m.group(1).strip()
+    else:
+        # 備註中的「三個人／3個人／3人」
+        m = re.search(
+            r"^(?:備註|其他備註)\s*[:：]?\s*.*?([0-9一二兩三四五六七八九十]+)\s*(?:個)?人",
+            text,
+            re.MULTILINE
+        )
+        if m:
+            raw = m.group(1) + "人"
+        else:
+            m = re.search(r"([0-9一二兩三四五六七八九十]+)\s*人", text)
+            if m:
+                raw = m.group(1) + "人"
 
-        if raw == "":
-            return ""
+    if not raw:
+        return ""
 
-        nums = re.findall(r"([0-9一二兩三四五六七八九十]+)\s*(大|小|人)?", raw)
+    nums = re.findall(
+        r"([0-9一二兩三四五六七八九十]+)\s*(大|小|人)?",
+        raw
+    )
+    if not nums:
+        return ""
 
-        if not nums:
-            return ""
+    people = sum(chinese_num_to_int(n) for n, _ in nums)
 
-        people = 0
-        for n, _ in nums:
-            people += chinese_num_to_int(n)
-
-        if people > 20:
-            return ""
+    if people <= 0 or people > 20:
+        return ""
 
     if people > 4:
         extra = (people - 4) * 100
@@ -299,21 +388,33 @@ def parse_notes(text):
     ignore_notes = [
         "0",
         "無", "沒有", "無備註",
+        "無行李", "沒行李",
         "N", "n", "NO", "No", "no",
         "-", "--", "免"
     ]
 
     for line in lines:
         if re.match(r"^\s*(備註|其他備註)\s*[:：]?", line):
-            note = re.sub(r"^\s*(備註|其他備註)\s*[:：]?\s*", "", line).strip()
+            note = re.sub(
+                r"^\s*(備註|其他備註)\s*[:：]?\s*",
+                "",
+                line
+            ).strip()
 
-            if not note:
+            if not note or note in ignore_notes:
                 return ""
 
-            if note in ignore_notes:
-                return ""
+            # 接機／送機另放在第一行，不當一般備註
+            note = re.sub(r"(^|[\s，,、/]+)(接機|送機)(?=$|[\s，,、/]+)", " ", note)
 
-            if re.search(r"^(?:💰|[$＄]|固定)\s*\d+", note):
+            # 移除備註裡的人數詞，例如「三個人」
+            note = re.sub(
+                r"([0-9一二兩三四五六七八九十]+)\s*(?:個)?人",
+                " ",
+                note
+            )
+
+            if re.search(r"^(?:💰|[$＄]|固定)\s*\d+", note.strip()):
                 return ""
 
             note = re.sub(r"[，,、/]+", " ", note)
@@ -333,6 +434,36 @@ def parse_notes(text):
     return ""
 
 
+def parse_airport_info(text):
+    service_type = ""
+
+    # 接機／送機欄位
+    m = re.search(
+        r"(?:接機\s*[／/]\s*送機|接機送機)\s*[:：]?\s*(接機|送機)",
+        text
+    )
+    if m:
+        service_type = m.group(1)
+    else:
+        # 備註 接機 / 備註：送機
+        m = re.search(
+            r"^(?:備註|其他備註)\s*[:：]?\s*.*?(接機|送機)",
+            text,
+            re.MULTILINE
+        )
+        if m:
+            service_type = m.group(1)
+
+    flight = ""
+    m = re.search(
+        r"(?:航班|航班編號|航班號碼)\s*[:：]?\s*([A-Za-z]{1,3}\s*\d{2,4})",
+        text
+    )
+    if m:
+        flight = re.sub(r"\s+", "", m.group(1)).upper()
+
+    return service_type, flight
+
 def parse_addresses(text):
     pickups = []
     dropoffs = []
@@ -340,83 +471,96 @@ def parse_addresses(text):
     lines = [l.strip() for l in text.splitlines() if l.strip()]
 
     stop_keywords = re.compile(
-        r"^(日期|時間|人數|乘坐人數|乘車人數|手機號碼|電話|行李數量|行李數|備註|其他備註|固定|💰|[$＄])\s*[:：]?"
+        r"^(日期|時間|人數|乘坐人數|乘車人數|手機號碼|連絡電話|聯絡電話|電話|"
+        r"行李數量|行李數|航班|接機／送機|接機/送機|備註|其他備註|固定|💰|[$＄])"
+        r"\s*(?:\([^)]*\)|（[^）]*）)?\s*[:：]?"
     )
 
-    pickup_label = r"^(第一個上車點|第二個上車點|第三個上車點|第二上車|第三上車|上車地址|上車地點|上車地|上車|上|🔺上車|⬆️|🔺)\s*[:：●]?\s*"
-    dropoff_label = r"^(第一個下車點|第二個下車點|第三個下車點|第二下車|第三下車|下車地址|下車地點|下車地|下車|目的地|目的●|目的|下|🔻下車|🔽|🔻)\s*[:：●]?\s*"
+    pickup_label = (
+        r"^(第一個上車點|第二個上車點|第三個上車點|第二上車|第三上車|"
+        r"上車地址|上車地點|上車地|上車|上|🔺上車|⬆️|🔺)\s*[:：●]?\s*"
+    )
+    dropoff_label = (
+        r"^(第一個下車點|第二個下車點|第三個下車點|第二下車|第三下車|"
+        r"下車地址|下車地點|下車地|下車|目的地|目的●|目的|下|"
+        r"🔻下車|🔽|🔻)\s*[:：●]?\s*"
+    )
+    continuation_label = r"^(?:\(加?\d+\)|（加?\d+）|[①②③④⑤⑥⑦⑧⑨⑩]|\d+[.、])\s*"
 
-    i = 0
-    while i < len(lines):
-        line = lines[i]
+    current_mode = None
 
+    for line in lines:
         if re.match(pickup_label, line):
+            current_mode = "pickup"
             addr = re.sub(pickup_label, "", line).strip()
             addr = re.sub(r"^[：:●]+\s*", "", addr)
-
             if addr:
-                addr = clean_address(addr)
-                if addr:
-                    pickups.append(addr)
-            else:
-                i += 1
-                while i < len(lines):
-                    next_line = lines[i]
+                cleaned = clean_address(addr)
+                if cleaned:
+                    pickups.append(cleaned)
+            continue
 
-                    if (
-                        re.match(pickup_label, next_line)
-                        or re.match(dropoff_label, next_line)
-                        or stop_keywords.match(next_line)
-                    ):
-                        i -= 1
-                        break
-
-                    if re.search(r"(市|區|鄉|鎮|路|街|巷|弄|號|機場|航廈|桃機|T1|T2)", next_line):
-                        addr = clean_address(next_line)
-                        if addr:
-                            pickups.append(addr)
-
-                    i += 1
-
-        elif re.match(dropoff_label, line):
+        if re.match(dropoff_label, line):
+            current_mode = "dropoff"
             addr = re.sub(dropoff_label, "", line).strip()
             addr = re.sub(r"^[：:●]+\s*", "", addr)
-
             if addr:
-                addr = clean_address(addr)
-                if addr:
-                    dropoffs.append(addr)
-            else:
-                i += 1
-                while i < len(lines):
-                    next_line = lines[i]
+                # 同一行的「(加1)地址」
+                addr = re.sub(continuation_label, "", addr).strip()
+                cleaned = clean_address(addr)
+                if cleaned:
+                    dropoffs.append(cleaned)
+            continue
 
-                    if (
-                        re.match(pickup_label, next_line)
-                        or re.match(dropoff_label, next_line)
-                        or stop_keywords.match(next_line)
-                    ):
-                        i -= 1
-                        break
+        if stop_keywords.match(line):
+            current_mode = None
+            continue
 
-                    if re.search(r"(市|區|鄉|鎮|路|街|巷|弄|號|機場|航廈|桃機|T1|T2)", next_line):
-                        addr = clean_address(next_line)
-                        if addr:
-                            dropoffs.append(addr)
+        # 括號／編號續接地址
+        if re.match(continuation_label, line):
+            addr = re.sub(continuation_label, "", line).strip()
+            cleaned = clean_address(addr)
+            if cleaned:
+                if current_mode == "pickup":
+                    pickups.append(cleaned)
+                else:
+                    dropoffs.append(cleaned)
+                    current_mode = "dropoff"
+            continue
 
-                    i += 1
+        # 標籤空白後的跨行地址
+        if current_mode in ("pickup", "dropoff"):
+            if re.search(
+                r"(市|區|鄉|鎮|路|街|巷|弄|號|機場|航廈|桃機|T1|T2|錢櫃|車站)",
+                line
+            ):
+                cleaned = clean_address(line)
+                if cleaned:
+                    if current_mode == "pickup":
+                        pickups.append(cleaned)
+                    else:
+                        dropoffs.append(cleaned)
+            continue
 
-        i += 1
-
+    # 極簡格式：沒有上／下標籤時，依地址順序判斷
     if not pickups and not dropoffs:
         address_like = []
         for line in lines:
-            if re.search(r"(市|區|鄉|鎮|路|街|巷|弄|號|機場|航廈|桃機|T1|T2)", line):
-                address_like.append(clean_address(clean_line(line)))
+            if re.search(
+                r"(市|區|鄉|鎮|路|街|巷|弄|號|機場|航廈|桃機|T1|T2|錢櫃|車站)",
+                line
+            ):
+                cleaned = clean_address(clean_line(line))
+                if cleaned:
+                    address_like.append(cleaned)
 
         if len(address_like) >= 2:
+            service_type, _ = parse_airport_info(text)
+
+            # 接機：第一個通常為機場上車
+            # 送機或無標記：第一個仍視為上車，第二個視為下車
             pickups.append(address_like[0])
-            dropoffs.append(address_like[1])
+            dropoffs.extend(address_like[1:])
 
     return pickups, dropoffs
 
@@ -427,13 +571,14 @@ def format_booking(text):
     price_text = parse_price(text)
     people_text = parse_people(text)
     note_text = parse_notes(text)
+    service_type, flight_text = parse_airport_info(text)
     pickups, dropoffs = parse_addresses(text)
 
     output = []
 
-    dt = " ".join([x for x in [date_text, time_text] if x])
-    if dt:
-        output.append(dt)
+    first_line_parts = [x for x in [date_text, time_text, service_type, flight_text] if x]
+    if first_line_parts:
+        output.append(" ".join(first_line_parts))
 
     for p in pickups:
         output.append(f"⬆️{p}")
@@ -461,8 +606,6 @@ def format_booking(text):
 
     return "\n".join(output).strip()
 
-
-@app.route("/", methods=["GET"])
 def home():
     return "LINE Bot is running"
 
