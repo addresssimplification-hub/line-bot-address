@@ -15,7 +15,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-BOT_VERSION = "v3.0.6"
+BOT_VERSION = "v3.0.7"
 GROUP_ID = "C68622c8e7215bffc165b1f657c148b4e"
 
 
@@ -205,6 +205,82 @@ def convert_time(period, hour, minute):
     return f"{hour:02d}:{minute:02d}"
 
 
+
+def should_hide_booking_time(text, hour, minute):
+    """
+    預約時間距離台北當下時間 10 分鐘內（含）時不顯示。
+    有明確日期時使用該日期；無日期／當日免填時，以最近的合理時刻判斷。
+    """
+    from datetime import timedelta
+
+    now = datetime.now(ZoneInfo("Asia/Taipei"))
+    target_date = now.date()
+    explicit_date = False
+
+    m = re.search(
+        r"(?:叫車日期|日期)(?:\s*\([^)]*\)|\s*（[^）]*）)?"
+        r"\s*[:：]?\s*(\d{4})[／/-](\d{1,2})[／/-](\d{1,2})",
+        text
+    )
+    if m:
+        try:
+            target_date = datetime(
+                int(m.group(1)), int(m.group(2)), int(m.group(3))
+            ).date()
+            explicit_date = True
+        except ValueError:
+            pass
+    else:
+        m = re.search(
+            r"(?:叫車日期|日期)(?:\s*\([^)]*\)|\s*（[^）]*）)?"
+            r"\s*[:：]?\s*(\d{1,2})[／/-](\d{1,2})",
+            text
+        )
+        if not m:
+            m = re.search(
+                r"(?m)^\s*(\d{1,2})[／/-](\d{1,2})"
+                r"(?=\s+(?:\d{1,2}[:：]\d{2}|\d{4})\b)",
+                text
+            )
+
+        if m:
+            month, day = int(m.group(1)), int(m.group(2))
+            try:
+                year = now.year
+                if now.month == 12 and month == 1:
+                    year += 1
+                elif now.month == 1 and month == 12:
+                    year -= 1
+                target_date = datetime(year, month, day).date()
+                explicit_date = True
+            except ValueError:
+                pass
+
+    target = datetime(
+        target_date.year, target_date.month, target_date.day,
+        hour, minute, tzinfo=ZoneInfo("Asia/Taipei")
+    )
+
+    if not explicit_date and target < now:
+        target += timedelta(days=1)
+
+    diff_minutes = (target - now).total_seconds() / 60
+    return 0 <= diff_minutes <= 10
+
+
+def format_booking_time(text, hour, minute):
+    if should_hide_booking_time(text, hour, minute):
+        return ""
+    return f"{hour:02d}:{minute:02d}"
+
+
+def format_booking_time_string(text, value):
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", value or "")
+    if not m:
+        return value
+    return format_booking_time(text, int(m.group(1)), int(m.group(2)))
+
+
 def nearest_ambiguous_hour(hour):
     """未寫上午/下午時，選擇現在之後最近的同一個 12 小時制時刻。"""
     now = datetime.now(ZoneInfo("Asia/Taipei"))
@@ -248,7 +324,7 @@ def parse_time(text):
     if m:
         hour, minute = int(m.group(1)), int(m.group(2))
         if 0 <= hour <= 23 and 0 <= minute <= 59:
-            return f"{hour:02d}:{minute:02d}"
+            return format_booking_time(text, hour, minute)
 
     # 等等3. / 等等3點 / 等3點
     m = re.search(
@@ -259,9 +335,9 @@ def parse_time(text):
     if m:
         raw_hour = int(m.group(1))
         if 1 <= raw_hour <= 12:
-            return f"{nearest_ambiguous_hour(raw_hour):02d}:00"
+            return format_booking_time(text, nearest_ambiguous_hour(raw_hour), 0)
         if 13 <= raw_hour <= 23:
-            return f"{raw_hour:02d}:00"
+            return format_booking_time(text, raw_hour, 0)
 
     # 08:35pm
     m = re.search(
@@ -274,7 +350,7 @@ def parse_time(text):
             hour += 12
         elif ap == "am" and hour == 12:
             hour = 0
-        return f"{hour:02d}:{minute:02d}"
+        return format_booking_time(text, hour, minute)
 
     # 下午6:30
     m = re.search(
@@ -282,7 +358,7 @@ def parse_time(text):
         text, re.I
     )
     if m:
-        return convert_time(m.group(1) or "", int(m.group(2)), int(m.group(3)))
+        return format_booking_time_string(text, convert_time(m.group(1) or "", int(m.group(2)), int(m.group(3))))
 
     # 下午3點 / 3點
     m = re.search(
@@ -293,7 +369,7 @@ def parse_time(text):
         period, hour = m.group(1) or "", int(m.group(2))
         if not period and 1 <= hour <= 12:
             hour = nearest_ambiguous_hour(hour)
-        return convert_time(period, hour, 0)
+        return format_booking_time_string(text, convert_time(period, hour, 0))
 
     # 0600pm
     m = re.search(rf"{time_label}\s*[:：]?\s*(\d{{1,2}})(\d{{2}})\s*(am|pm)", text, re.I)
@@ -303,35 +379,35 @@ def parse_time(text):
             hour += 12
         elif ap == "am" and hour == 12:
             hour = 0
-        return f"{hour:02d}:{minute:02d}"
+        return format_booking_time(text, hour, minute)
 
     # 0500 / 1830
     m = re.search(rf"{time_label}\s*[:：]?\s*(\d{{1,2}})(\d{{2}})\b", text)
     if m:
         hour, minute = int(m.group(1)), int(m.group(2))
         if 0 <= hour <= 23 and 0 <= minute <= 59:
-            return f"{hour:02d}:{minute:02d}"
+            return format_booking_time(text, hour, minute)
 
     # 極簡：8/26 03:30 ...
     m = re.search(r"(?m)^\s*\d{1,2}[／/-]\d{1,2}\s+(\d{1,2})[:：](\d{2})\b", text)
     if m:
         hour, minute = int(m.group(1)), int(m.group(2))
         if 0 <= hour <= 23 and 0 <= minute <= 59:
-            return f"{hour:02d}:{minute:02d}"
+            return format_booking_time(text, hour, minute)
 
     # 極簡：8/9 2200
     m = re.search(r"(?m)^\s*\d{1,2}[／/-]\d{1,2}\s+(\d{2})(\d{2})\b", text)
     if m:
         hour, minute = int(m.group(1)), int(m.group(2))
         if 0 <= hour <= 23 and 0 <= minute <= 59:
-            return f"{hour:02d}:{minute:02d}"
+            return format_booking_time(text, hour, minute)
 
     # 單獨一行 04:30
     m = re.search(r"(?m)^\s*(\d{1,2})\s*[:：]\s*(\d{2})\s*$", text)
     if m:
         hour, minute = int(m.group(1)), int(m.group(2))
         if 0 <= hour <= 23 and 0 <= minute <= 59:
-            return f"{hour:02d}:{minute:02d}"
+            return format_booking_time(text, hour, minute)
 
     return ""
 
@@ -545,6 +621,11 @@ def parse_addresses(text):
 
     while i < len(raw_lines):
         line = raw_lines[i]
+
+        # 固定表單提示文字，不當地址或備註處理
+        if re.search(r"^(麻煩填寫完整地址|麻煩提供正確電話)", line):
+            i += 1
+            continue
 
         # 特殊：上車時間欄誤填地址
         m = re.match(r"^上車時間\s*[:：]?\s*(.+)$", line)
