@@ -15,7 +15,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-BOT_VERSION = "v3.1.0"
+BOT_VERSION = "v3.1.1"
 GROUP_ID = "C68622c8e7215bffc165b1f657c148b4e"
 
 
@@ -175,8 +175,36 @@ def looks_like_address_fragment(value):
     return bool(re.search(r"(路|街|巷|弄|號|區|鄉|鎮|市|里|村|口|門口|航廈|機場)", s))
 
 
-def clean_address(addr):
+
+def reorder_reversed_address(addr):
+    """
+    處理逆序地址：
+    路名 + 里 + 區 + 縣市 + 門牌
+    例如：民德路清穗里中和區新北市235
+    -> 新北市中和區清穗里民德路235
+    """
     s = addr.strip()
+
+    m = re.fullmatch(
+        r"(?P<road>[\u4e00-\u9fff0-9一二三四五六七八九十甲乙丙丁]+"
+        r"(?:路|街|大道)(?:[一二三四五六七八九十0-9]+段)?)"
+        r"(?P<village>[\u4e00-\u9fff]{1,8}里)"
+        r"(?P<district>[\u4e00-\u9fff]{1,8}(?:區|鄉|鎮|市))"
+        r"(?P<city>台北市|臺北市|新北市|桃園市)"
+        r"(?P<number>\d+(?:-\d+)?)",
+        s
+    )
+    if m:
+        return (
+            f"{m.group('city')}{m.group('district')}"
+            f"{m.group('village')}{m.group('road')}{m.group('number')}"
+        )
+
+    return s
+
+
+def clean_address(addr):
+    s = reorder_reversed_address(addr.strip())
     s = re.sub(r"^[：:；●\s]+", "", s)
 
     # 多點編號
@@ -402,7 +430,7 @@ def parse_time(text):
 
     # 今日凌晨02:00 / 今日下午3:20
     m = re.search(
-        rf"{label}\s*:\s*今日\s*(凌晨|早上|上午|中午|下午|晚上)?\s*(\d{{1,2}}):(\d{{2}})",
+        rf"{label}\s*:\s*今日\s*(凌晨|早上|上午|中午|下午|晚上)?\s*(\d{{1,2}})[:.](\d{{2}})",
         t
     )
     if m:
@@ -410,7 +438,7 @@ def parse_time(text):
         return format_time_with_10min_rule(t, hour, minute)
 
     # 預約1:05
-    m = re.search(r"預約\s*:?\s*(\d{1,2}):(\d{2})", t)
+    m = re.search(r"預約\s*:?\s*(\d{1,2})[:.](\d{2})", t)
     if m:
         hour, minute = int(m.group(1)), int(m.group(2))
         if 0 <= hour <= 23 and 0 <= minute <= 59:
@@ -429,7 +457,7 @@ def parse_time(text):
 
     # 上午/下午/凌晨 + HH:MM
     m = re.search(
-        rf"{label}\s*:\s*(凌晨|早上|上午|中午|下午|晚上)?\s*(\d{{1,2}}):(\d{{2}})",
+        rf"{label}\s*:\s*(凌晨|早上|上午|中午|下午|晚上)?\s*(\d{{1,2}})[:.](\d{{2}})",
         t
     )
     if m:
@@ -452,7 +480,7 @@ def parse_time(text):
         return format_time_with_10min_rule(t, hour, minute)
 
     # 08:35pm
-    m = re.search(rf"{label}\s*:\s*(\d{{1,2}}):(\d{{2}})\s*(am|pm)", t, re.I)
+    m = re.search(rf"{label}\s*:\s*(\d{{1,2}})[:.](\d{{2}})\s*(am|pm)", t, re.I)
     if m:
         hour, minute = int(m.group(1)), int(m.group(2))
         ap = m.group(3).lower()
@@ -470,7 +498,7 @@ def parse_time(text):
             return format_time_with_10min_rule(t, hour, minute)
 
     # 極簡：8/26 03:30 ...
-    m = re.search(r"(?m)^\s*\d{1,2}[/-]\d{1,2}\s+(\d{1,2}):(\d{2})\b", t)
+    m = re.search(r"(?m)^\s*\d{1,2}[/-]\d{1,2}\s+(\d{1,2})[:.](\d{2})\b", t)
     if m:
         hour, minute = int(m.group(1)), int(m.group(2))
         return format_time_with_10min_rule(t, hour, minute)
@@ -482,7 +510,7 @@ def parse_time(text):
         return format_time_with_10min_rule(t, hour, minute)
 
     # 單獨一行 04:30
-    m = re.search(r"(?m)^\s*(\d{1,2}):(\d{2})\s*$", t)
+    m = re.search(r"(?m)^\s*(\d{1,2})[:.](\d{2})\s*$", t)
     if m:
         hour, minute = int(m.group(1)), int(m.group(2))
         if 0 <= hour <= 23 and 0 <= minute <= 59:
