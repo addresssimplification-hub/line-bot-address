@@ -1,5 +1,6 @@
 import os
 import re
+from functools import lru_cache
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from flask import Flask, request, abort
@@ -15,11 +16,32 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-BOT_VERSION = "v3.3.0"
+BOT_VERSION = "v3.4.0"
 GROUP_ID = "C68622c8e7215bffc165b1f657c148b4e"
 
 
 def notify_startup():
+    """
+    同一個 Render 容器、同一版本只送一次啟動通知。
+    Gunicorn worker 重載/多 worker import 不再重複通知。
+    新部署/新容器仍會正常通知。
+    """
+    sentinel = f"/tmp/line_bot_startup_{BOT_VERSION}.lock"
+
+    try:
+        fd = os.open(
+            sentinel,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o600
+        )
+        os.close(fd)
+    except FileExistsError:
+        return
+    except Exception as e:
+        # Sentinel 建立失敗時，不因通知功能影響 Bot 本體。
+        print("Startup sentinel error:", e)
+        return
+
     try:
         now = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d %H:%M:%S")
         line_bot_api.push_message(
@@ -29,8 +51,12 @@ def notify_startup():
             )
         )
     except Exception as e:
+        # 若通知真的失敗，移除 sentinel，下一次 worker 啟動可再嘗試。
+        try:
+            os.remove(sentinel)
+        except OSError:
+            pass
         print("Startup notify error:", e)
-
 
 
 
@@ -83,6 +109,7 @@ FIELD_PREFIXES = (
 )
 
 
+@lru_cache(maxsize=256)
 def normalize_text(text):
     """統一解析標點，並拆開常見的黏欄位。"""
     t = (
@@ -893,6 +920,17 @@ def parse_addresses(text):
     for raw in lines:
         line = raw.strip()
 
+        # 人數相關文字不能被當成地址或額外下車點
+        if re.fullmatch(
+            r"(?:人|人數|乘坐人數|乘車人數|乘客人數|"
+            r"\d+\s*人(?:\s*[+➕＋]\s*\d+)?|"
+            r"[一二兩三四五六七八九十]+\s*人)",
+            line
+        ):
+            flush()
+            current_mode = None
+            continue
+
         if is_noise_line(line):
             continue
 
@@ -984,7 +1022,12 @@ def parse_addresses(text):
                 hh, mm = int(t[:2]), int(t[2:])
                 if 0 <= hh <= 23 and 0 <= mm <= 59:
                     continue
-            if re.match(r"^\d+\s*人", t):
+            if re.fullmatch(
+                r"(?:人|人數|乘坐人數|乘車人數|乘客人數|"
+                r"\d+\s*人(?:\s*[+➕＋]\s*\d+)?|"
+                r"[一二兩三四五六七八九十]+\s*人)",
+                t
+            ):
                 continue
             if re.match(r"^(?:💰?\s*)?\d+\s*元?$", t):
                 continue
@@ -1013,97 +1056,169 @@ def is_airport_booking(text, service, pickups, dropoffs):
     return bool(re.search(r"(桃園(?:國際)?機場|桃機|第一航廈|第二航廈|\bT1\b|\bT2\b|機場)", combined, re.I))
 
 
-def format_booking(text):
-    date_text = parse_date(text)
-    time_text = parse_time(text)
-    price_text = parse_price(text)
-    note_text = parse_notes(text)
-    booking_type = parse_booking_type(text)
-    vehicle_text = parse_vehicle_info(text)
 
-    service, flight = parse_airport_info(text)
-    pickups, dropoffs = parse_addresses(text)
+def parse_people_extra(text):
+    """
+    不自動計算人數加價。
+    只有原文明確出現「5人 +100 / 5人➕100 / 5人 加100」才保留。
+    七座/七人座車型加價不屬於這裡。
+    """
+    t = normalize_text(text)
 
-    airport = is_airport_booking(text, service, pickups, dropoffs)
-    people = parse_people_count(text)
-    luggage = parse_luggage(text)
+    m = re.search(
+        r"([0-9一二兩三四五六七八九十]+)\s*人\s*"
+        r"(?:\+|➕|＋|加)\s*(\d{2,5})",
+        t
+    )
+    if m:
+        return f"+{m.group(2)}"
 
+    return ""
+
+
+def parse_booking_data(text):
+    """
+    單一解析入口。
+    同一張 LINE 訂單只建立一次結構化資料，完整訊息與額外訊息共用。
+    """
+    source = normalize_text(text)
+
+    # 先解析相互依賴的欄位
+    service, flight = parse_airport_info(source)
+    pickups, dropoffs = parse_addresses(source)
+
+    data = {
+        "source": source,
+        "date": parse_date(source),
+        "time": parse_time(source),
+        "price": parse_price(source),
+        "note": parse_notes(source),
+        "booking_type": parse_booking_type(source),
+        "vehicle": parse_vehicle_info(source),
+        "people_extra": parse_people_extra(source),
+        "service": service,
+        "flight": flight,
+        "pickups": pickups,
+        "dropoffs": dropoffs,
+        "people": parse_people_count(source),
+        "luggage": parse_luggage(source),
+    }
+
+    data["airport"] = is_airport_booking(
+        source,
+        data["service"],
+        data["pickups"],
+        data["dropoffs"]
+    )
+
+    return data
+
+
+def format_booking_data(data):
+    """只負責格式化，不重新解析原文。"""
     output = []
 
-    first = [x for x in (date_text, time_text, booking_type, service, flight) if x]
+    first = [
+        x for x in (
+            data["date"],
+            data["time"],
+            data["booking_type"],
+            data["service"],
+            data["flight"],
+        )
+        if x
+    ]
     if first:
         output.append(" ".join(first))
 
-    for p in pickups:
-        output.append(f"⬆️{p}")
+    for pickup in data["pickups"]:
+        output.append(f"⬆️{pickup}")
 
-    if dropoffs:
-        output.append(f"下車地點：{dropoffs[0]}")
-        for d in dropoffs[1:]:
-            output.append(f"🔽{d}")
+    if data["dropoffs"]:
+        output.append(f"下車地點：{data['dropoffs'][0]}")
+        for dropoff in data["dropoffs"][1:]:
+            output.append(f"🔽{dropoff}")
 
-    if vehicle_text:
-        output.append(vehicle_text)
+    if data["vehicle"]:
+        output.append(data["vehicle"])
 
     info = []
-    if airport:
-        if people > 0:
-            info.append(f"{people}人")
-        if luggage:
-            info.append(luggage)
-    else:
-        if people > 4:
-            info.append(f"{people}人 +{(people - 4) * 100}")
 
-    if note_text:
-        info.append(note_text)
+    if data["airport"]:
+        if data["people"] > 0:
+            info.append(f"{data['people']}人")
+        if data["luggage"]:
+            info.append(data["luggage"])
+    else:
+        if data["people"] > 4:
+            people_text = f"{data['people']}人"
+            if data["people_extra"]:
+                people_text += f" {data['people_extra']}"
+            info.append(people_text)
+
+    if data["note"]:
+        info.append(data["note"])
 
     if info:
         output.append("｜".join(info))
 
-    if price_text:
-        output.append(price_text)
+    if data["price"]:
+        output.append(data["price"])
 
     return "\n".join(output).strip()
 
+
+def format_booking(text):
+    """
+    保留舊函式介面，方便既有測試/其他程式呼叫。
+    實際解析統一走 parse_booking_data()。
+    """
+    return format_booking_data(parse_booking_data(text))
+
+
 def build_reply_texts(text):
     """
+    同一張單只 parse_booking_data() 一次。
+
     1 完整簡化
     2 上車地；代駕/備註也顯示
     3 取消 上車地
     4 有有效預約時間：*時間；代駕/備註也顯示
     """
-    result = format_booking(text)
+    data = parse_booking_data(text)
+    result = format_booking_data(data)
+
     if not result:
         return []
 
     replies = [result]
-    pickups, _ = parse_addresses(text)
-    if not pickups:
+
+    if not data["pickups"]:
         return replies
 
-    pickup = pickups[0]
-    booking_type = parse_booking_type(text)
-    note_text = parse_notes(text)
-    time_text = parse_time(text)
+    pickup = data["pickups"][0]
 
+    # 第二則
     second = []
-    if booking_type:
-        second.append(booking_type)
+    if data["booking_type"]:
+        second.append(data["booking_type"])
     second.append(f"⬆️{pickup}")
-    if note_text:
-        second.append(note_text)
+    if data["note"]:
+        second.append(data["note"])
     replies.append("\n".join(second))
 
+    # 第三則
     replies.append(f"取消 {pickup}")
 
-    if time_text:
-        first_line = f"*{time_text}"
-        if booking_type:
-            first_line += f" {booking_type}"
+    # 第四則
+    if data["time"]:
+        first_line = f"*{data['time']}"
+        if data["booking_type"]:
+            first_line += f" {data['booking_type']}"
+
         fourth = [first_line, f"⬆️{pickup}"]
-        if note_text:
-            fourth.append(note_text)
+        if data["note"]:
+            fourth.append(data["note"])
         replies.append("\n".join(fourth))
 
     return replies[:4]
