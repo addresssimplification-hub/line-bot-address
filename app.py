@@ -15,7 +15,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-BOT_VERSION = "v3.2.0"
+BOT_VERSION = "v3.3.0"
 GROUP_ID = "C68622c8e7215bffc165b1f657c148b4e"
 
 
@@ -54,13 +54,13 @@ PHONE_LABELS = (
     "連絡電話", "聯絡電話"
 )
 
-NOTE_LABELS = ("備註", "備注", "其他備註", "其他備注")
+NOTE_LABELS = ("其他備註", "其他備注", "備註", "備注")
 
 PICKUP_LABELS = (
     "第一個上車點", "第二個上車點", "第三個上車點",
     "第二上車", "第三上車",
     "上車地址", "上車地點", "上車地", "上車",
-    "⬆️位置", "⬆位置", "出發", "起點", "起",
+    "⬆️位置", "⬆位置", "出發地", "出發", "起點", "起",
     "🔺上車", "⬆️", "⬆", "🔺", "上"
 )
 
@@ -68,7 +68,7 @@ DROPOFF_LABELS = (
     "第一個下車點", "第二個下車點", "第三個下車點",
     "第二下車", "第三下車",
     "下車地址", "下車地點", "下車地", "下車",
-    "到達", "終點", "目的地", "目的●", "目的",
+    "到達", "終點", "目的地", "目地", "目的●", "目的",
     "🔻下車", "🔽", "🔻", "下"
 )
 
@@ -78,27 +78,35 @@ FIELD_PREFIXES = (
     "行李數量", "行李數", "行李箱",
     "航班", "航班編號", "航班號碼",
     "接機／送機", "接機/送機",
-    "Line匿稱", "Line暱稱",
+    "Line匿稱", "Line暱稱", "Line名字", "LINE名字", "車款",
     *PHONE_LABELS, *NOTE_LABELS
 )
 
 
 def normalize_text(text):
-    """統一解析標點，並把明顯黏在同一行的欄位拆開。"""
+    """統一解析標點，並拆開常見的黏欄位。"""
     t = (
         text.replace("\u3000", " ")
             .replace("：", ":")
             .replace("；", ":")
             .replace("／", "/")
     )
+
+    # 下車地址:潮汽車旅館。人數:1
     t = re.sub(
         r"[。．]\s*(?=(?:叫車日期|日期|時間|人數|乘坐人數|乘車人數|"
         r"手機|手機號碼|電話|TEL|連絡電話|聯絡電話|"
-        r"行李數量|行李數|行李箱|備註|備注|其他備註|其他備注)\s*:)",
+        r"行李數量|行李數|行李箱|備註|備注|其他備註|其他備注|"
+        r"車款|Line名字|LINE名字)\s*:)",
         "\n", t, flags=re.I
     )
-    return t
 
+    # 地址後直接黏「目的地/目地」
+    t = re.sub(
+        r"(?<=[號巷弄路街區市廈口）)])\s*(?=(?:目的地|目地)\s*:)",
+        "\n", t
+    )
+    return t
 
 def is_noise_line(line):
     s = line.strip()
@@ -110,8 +118,8 @@ def is_noise_line(line):
 def is_booking_text(text):
     keywords = [
         "上車", "下車", "上車地", "下車地", "上車地點", "下車地點",
-        "⬆️", "⬆", "🔽", "🔺", "🔻", "出發", "起點", "到達", "終點",
-        "目的", "日期", "叫車日期", "時間", "預約",
+        "⬆️", "⬆", "🔽", "🔺", "🔻", "出發", "出發地", "起點", "到達", "終點",
+        "目的", "目地", "日期", "叫車日期", "時間", "預約", "代駕",
         "人數", "乘坐人數", "乘車人數",
         "機場", "桃機", "航廈", "接機", "送機", "航班",
         "行李", "💰", "$", "＄", "固定"
@@ -132,14 +140,29 @@ def is_booking_text(text):
 
 def strip_label(line, labels):
     s = line.strip()
+
     for label in sorted(labels, key=len, reverse=True):
         if not s.startswith(label):
             continue
+
         rest = s[len(label):]
-        if label in {"上", "下", "起"} and rest and not re.match(r"^[\s:：；●]", rest):
-            continue
+
+        # 單字標籤特別處理：
+        # 允許「上信義區松仁路88號」這種直接接地址的格式，
+        # 但不能把「下午5:20」誤認成「下 + 地址」。
+        if label in {"上", "下", "起"} and rest:
+            if re.match(r"^[\s:：；●]", rest):
+                pass
+            else:
+                if label == "下" and rest.startswith("午"):
+                    continue
+
+                if not looks_like_address(rest):
+                    continue
+
         rest = re.sub(r"^\s*[:：；●]?\s*", "", rest)
         return True, rest.strip()
+
     return False, s
 
 def looks_like_address(value):
@@ -153,7 +176,7 @@ def looks_like_address(value):
     if re.match(r"^\d{1,2}:\d{2}$", normalize_text(s)):
         return False
 
-    if re.search(r"(路|街|巷|弄|號|區|鄉|鎮|市|村|里|機場|航廈|桃機|車站|飯店|酒店|大樓|巷口|門口)", s):
+    if re.search(r"(路|街|巷|弄|號|區|鄉|鎮|市|村|里|機場|航廈|桃機|車站|飯店|酒店|旅館|汽車旅館|大樓|巷口|門口)", s):
         return True
 
     if re.search(r"(拉麵|餐廳|KTV|百貨|醫院|學校|夜市|捷運|高鐵|錢櫃)", s, re.I):
@@ -572,6 +595,13 @@ def parse_time(text):
         hour, minute = int(m.group(1)), int(m.group(2))
         return format_time_with_10min_rule(t, hour, minute)
 
+    # 單獨一行 0500 / 1830 / 2300
+    m = re.search(r"(?m)^\s*(\d{2})(\d{2})\s*$", t)
+    if m:
+        hour, minute = int(m.group(1)), int(m.group(2))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return format_time_with_10min_rule(t, hour, minute)
+
     # 單獨一行 04:30
     m = re.search(r"(?m)^\s*(\d{1,2})[:.](\d{2})\s*$", t)
     if m:
@@ -583,19 +613,24 @@ def parse_time(text):
 
 
 def parse_price(text):
+    """
+    金額必須有明確金額提示。
+    純四碼（如 2300）優先視為時間，不當金額。
+    """
     t = normalize_text(text)
     patterns = [
         r"固定\s*💰?\s*(\d+)",
         r"💰\s*(\d+)",
         r"[$＄]\s*(\d+)",
-        r"(?m)^\s*(\d{3,5})\s*元\s*$"
+        r"(?m)^\s*錢\s*:?\s*(\d+)\s*$",
+        r"(?m)^\s*收\s*:?\s*(\d+)\s*$",
+        r"(?m)^\s*(\d{3,5})\s*元\s*$",
     ]
     for p in patterns:
         m = re.search(p, t)
         if m:
             return f"💰{m.group(1)}"
     return ""
-
 
 def chinese_num_to_int(s):
     mapping = {
@@ -670,6 +705,33 @@ def parse_luggage(text):
 
     return ""
 
+
+def parse_booking_type(text):
+    """目前需保留顯示的服務類型。"""
+    t = normalize_text(text)
+    if "代駕預約" in t or re.search(r"(?m)^\s*代駕\s*$", t):
+        return "代駕"
+    return ""
+
+
+def parse_vehicle_info(text):
+    """七座車型，不與乘客人數混用。"""
+    t = normalize_text(text)
+    m = re.search(
+        r"(?:七人座|七座|7人座|7座)\s*(?:➕|\+|加)?\s*(\d{2,5})?",
+        t
+    )
+    if not m:
+        return ""
+    extra = m.group(1)
+    return f"七座+{extra}" if extra else "七座"
+
+
+def is_phone_only(value):
+    compact = re.sub(r"[\s\-()（）]", "", value or "")
+    return bool(re.fullmatch(r"(?:\+?886)?0?\d{8,10}", compact))
+
+
 def parse_airport_info(text):
     t = normalize_text(text)
 
@@ -702,12 +764,13 @@ def parse_airport_info(text):
 
 
 def parse_notes(text):
-    """支援同一行備註、下一行備註、既有 ✅ 格式；遇到下一欄位就停止。"""
-    lines = [x.strip() for x in text.splitlines()]
+    """解析備註；純電話號碼視為聯絡資訊，不顯示。"""
+    lines = [x.strip() for x in normalize_text(text).splitlines()]
     ignore = {
         "0", "無", "沒有", "無備註", "無備注", "無行李", "沒行李",
         "免備註", "免備注", "不用", "正常", "一般", "皆可",
-        "N", "n", "NO", "No", "no", "-", "--", "免", "X", "x", "Ｘ", "ｘ"
+        "N", "n", "NO", "No", "no", "-", "--", "免",
+        "X", "x", "Ｘ", "ｘ"
     }
 
     collected = []
@@ -727,14 +790,12 @@ def parse_notes(text):
             if is_noise_line(line):
                 continue
 
-            # 遇到其他欄位停止
             if any(line.startswith(p) for p in FIELD_PREFIXES if p not in NOTE_LABELS):
                 break
             if any(line.startswith(p) for p in PICKUP_LABELS + DROPOFF_LABELS):
                 break
             collected.append(line)
 
-    # 沒有備註欄位，但已有整理格式 ✅轉帳，也保留
     if not collected:
         for line in lines:
             if line.startswith("✅") and len(line) > 1:
@@ -743,51 +804,57 @@ def parse_notes(text):
     parts = []
     for raw in collected:
         s = raw.strip()
-        if not s or s in ignore or is_noise_line(s):
+        if not s or s in ignore or is_noise_line(s) or is_phone_only(s):
             continue
 
         s = re.sub(r"(^|[\s，,、/]+)(接機|送機)(?=$|[\s，,、/]+)", " ", s)
         s = re.sub(r"([0-9一二兩三四五六七八九十]+)\s*(?:個)?人", " ", s)
         s = re.sub(r"\d+\s*(?:個|件|箱)\s*(?:\d{2}\s*吋)?\s*行李", " ", s)
 
-        if re.match(r"^(?:💰|[$＄]|固定)\s*\d+", s):
+        if re.match(r"^(?:💰|[$＄]|固定|錢|收)\s*:?\s*\d+", s):
             continue
 
-        # 已有 ✅ 不重複加
         if s.startswith("✅"):
             payload = s.lstrip("✅").strip()
-            if payload and payload not in ignore:
+            if payload and payload not in ignore and not is_phone_only(payload):
                 parts.append(f"✅{payload}")
             continue
 
-        # 空白分隔的短詞各自加 ✅，完整句子保留為一項
-        chunks = [c for c in re.split(r"[，,、/]+", s) if c.strip()]
+        chunks = [c.strip() for c in re.split(r"[，,、/]+", s) if c.strip()]
         for c in chunks:
-            c = c.strip()
-            if not c or c in ignore:
+            if not c or c in ignore or is_phone_only(c):
                 continue
-
-            # 「客人有妥瑞氏症 轉帳」→ 句子 + 轉帳
             if " " in c:
-                tokens = [x for x in c.split() if x]
-                for token in tokens:
-                    if token not in ignore:
+                for token in [x for x in c.split() if x]:
+                    if token not in ignore and not is_phone_only(token):
                         parts.append(f"✅{token}")
             else:
                 parts.append(f"✅{c}")
 
+    # 金額後黏備註
     m = re.search(r"(?:💰|[$＄])\s*\d+\s*([^\n\d].*)$", normalize_text(text), re.MULTILINE)
     if m:
         suffix = m.group(1).strip()
-        if suffix and suffix not in ignore and not is_noise_line(suffix):
+        if suffix and suffix not in ignore and not is_noise_line(suffix) and not is_phone_only(suffix):
             tag = f"✅{suffix}"
             if tag not in parts:
                 parts.append(tag)
 
-    return "".join(parts)
-
+    # 去重
+    seen, unique = set(), []
+    for item in parts:
+        if item not in seen:
+            seen.add(item)
+            unique.append(item)
+    return "".join(unique)
 
 def parse_addresses(text):
+    """
+    地址流程：
+    1) 先正規化/拆黏欄位
+    2) 再辨識上/下車標籤
+    3) 最後才做地址清理
+    """
     source = normalize_text(text)
     lines = [x.strip() for x in source.splitlines() if x.strip()]
     pickups, dropoffs = [], []
@@ -796,23 +863,31 @@ def parse_addresses(text):
     current_parts = []
     skip_phone_continuation = False
 
+    def append_clean(mode, value):
+        cleaned = clean_address(value)
+        if not cleaned:
+            return
+        (pickups if mode == "pickup" else dropoffs).append(cleaned)
+
+    def split_drop_sequence(value):
+        s = value.strip()
+        s = re.sub(r"^先到", "", s)
+        parts = [x.strip() for x in re.split(r"再到", s) if x.strip()]
+        return parts if parts else []
+
     def flush():
         nonlocal current_parts
         if not current_parts or current_mode not in ("pickup", "dropoff"):
             current_parts = []
             return
 
-        merged = "".join(current_parts)
+        merged = re.sub(r"\s+", "", "".join(current_parts))
 
-        # 特例：景安 + 里景平路... → 景安里景平路...
-        merged = re.sub(r"\s+", "", merged)
-
-        cleaned = clean_address(merged)
-        if cleaned:
-            if current_mode == "pickup":
-                pickups.append(cleaned)
-            else:
-                dropoffs.append(cleaned)
+        if current_mode == "dropoff" and ("先到" in merged or "再到" in merged):
+            for point in split_drop_sequence(merged):
+                append_clean("dropoff", point)
+        else:
+            append_clean(current_mode, merged)
         current_parts = []
 
     for raw in lines:
@@ -821,18 +896,25 @@ def parse_addresses(text):
         if is_noise_line(line):
             continue
 
-        # 電話欄及其斷行 continuation
+        # 額外資訊欄，不讓它被地址解析吃掉
+        if re.match(r"^(?:Line名字|LINE名字|Line匿稱|Line暱稱|車款)\s*:", line, re.I):
+            flush()
+            current_mode = None
+            continue
+
+        # 電話欄及斷行 continuation
         if any(line.startswith(p) for p in PHONE_LABELS):
             flush()
             current_mode = None
             skip_phone_continuation = True
             continue
+
         if skip_phone_continuation:
             if re.match(r"^-?[\d\- ]+$", line):
                 continue
             skip_phone_continuation = False
 
-        # 上車時間欄誤填地址
+        # 上車時間誤填地址
         if line.startswith("上車時間"):
             hit, value = strip_label(line, ("上車時間",))
             if value and looks_like_address(value):
@@ -854,17 +936,21 @@ def parse_addresses(text):
         hit, value = strip_label(line, DROPOFF_LABELS)
         if hit:
             flush()
-            current_mode = "dropoff"
-            current_parts = [value] if value else []
+            if value and (value.startswith("先到") or "再到" in value):
+                for point in split_drop_sequence(value):
+                    append_clean("dropoff", point)
+                current_mode = None
+                current_parts = []
+            else:
+                current_mode = "dropoff"
+                current_parts = [value] if value else []
             continue
 
-        # 其他欄位出現就結束地址區塊
         if any(line.startswith(p) for p in FIELD_PREFIXES):
             flush()
             current_mode = None
             continue
 
-        # 數字編號續點：2士林 / 1桃園區...
         if current_mode in ("pickup", "dropoff") and re.match(
             r"^(?:\(加?\d+\)|（加?\d+）|[①②③④⑤⑥⑦⑧⑨⑩]|\d+[.、]|[1-9](?=[\u4e00-\u9fff]))",
             line
@@ -873,19 +959,16 @@ def parse_addresses(text):
             current_parts = [line]
             continue
 
-        # 地址續行
         if current_mode in ("pickup", "dropoff"):
             if line.startswith(("(", "（")) or looks_like_address_fragment(line) or looks_like_address(line):
                 current_parts.append(line)
                 continue
-
-            # 非地址內容結束區塊
             flush()
             current_mode = None
 
     flush()
 
-    # 完全沒標籤：依地址順序，第一個上車，其餘下車
+    # 無標籤格式：第一個地址上車，其餘下車
     if not pickups and not dropoffs:
         candidates = []
         for line in lines:
@@ -897,6 +980,10 @@ def parse_addresses(text):
                 continue
             if re.match(r"^\d{1,2}:\d{2}$", t):
                 continue
+            if re.fullmatch(r"\d{4}", t):
+                hh, mm = int(t[:2]), int(t[2:])
+                if 0 <= hh <= 23 and 0 <= mm <= 59:
+                    continue
             if re.match(r"^\d+\s*人", t):
                 continue
             if re.match(r"^(?:💰?\s*)?\d+\s*元?$", t):
@@ -907,6 +994,8 @@ def parse_addresses(text):
                 continue
             if "行李" in line and re.search(r"\d", line):
                 continue
+            if re.match(r"^(?:Line名字|LINE名字|Line匿稱|Line暱稱|車款)\s*:", line, re.I):
+                continue
 
             if looks_like_address(line):
                 candidates.append(clean_address(line))
@@ -916,7 +1005,6 @@ def parse_addresses(text):
             dropoffs.extend(candidates[1:])
 
     return pickups, dropoffs
-
 
 def is_airport_booking(text, service, pickups, dropoffs):
     if service in ("接機", "送機"):
@@ -930,6 +1018,9 @@ def format_booking(text):
     time_text = parse_time(text)
     price_text = parse_price(text)
     note_text = parse_notes(text)
+    booking_type = parse_booking_type(text)
+    vehicle_text = parse_vehicle_info(text)
+
     service, flight = parse_airport_info(text)
     pickups, dropoffs = parse_addresses(text)
 
@@ -939,7 +1030,7 @@ def format_booking(text):
 
     output = []
 
-    first = [x for x in (date_text, time_text, service, flight) if x]
+    first = [x for x in (date_text, time_text, booking_type, service, flight) if x]
     if first:
         output.append(" ".join(first))
 
@@ -950,6 +1041,9 @@ def format_booking(text):
         output.append(f"下車地點：{dropoffs[0]}")
         for d in dropoffs[1:]:
             output.append(f"🔽{d}")
+
+    if vehicle_text:
+        output.append(vehicle_text)
 
     info = []
     if airport:
@@ -972,26 +1066,45 @@ def format_booking(text):
 
     return "\n".join(output).strip()
 
-
-
 def build_reply_texts(text):
+    """
+    1 完整簡化
+    2 上車地；代駕/備註也顯示
+    3 取消 上車地
+    4 有有效預約時間：*時間；代駕/備註也顯示
+    """
     result = format_booking(text)
     if not result:
         return []
 
     replies = [result]
     pickups, _ = parse_addresses(text)
-
     if not pickups:
         return replies
 
     pickup = pickups[0]
-    replies.append(f"⬆️{pickup}")
+    booking_type = parse_booking_type(text)
+    note_text = parse_notes(text)
+    time_text = parse_time(text)
+
+    second = []
+    if booking_type:
+        second.append(booking_type)
+    second.append(f"⬆️{pickup}")
+    if note_text:
+        second.append(note_text)
+    replies.append("\n".join(second))
+
     replies.append(f"取消 {pickup}")
 
-    time_text = parse_time(text)
     if time_text:
-        replies.append(f"*{time_text}\n⬆️{pickup}")
+        first_line = f"*{time_text}"
+        if booking_type:
+            first_line += f" {booking_type}"
+        fourth = [first_line, f"⬆️{pickup}"]
+        if note_text:
+            fourth.append(note_text)
+        replies.append("\n".join(fourth))
 
     return replies[:4]
 
