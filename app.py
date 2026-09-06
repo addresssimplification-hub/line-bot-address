@@ -16,7 +16,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-BOT_VERSION = "v3.4.0"
+BOT_VERSION = "v3.4.1"
 GROUP_ID = "C68622c8e7215bffc165b1f657c148b4e"
 
 
@@ -1198,11 +1198,13 @@ def build_reply_texts(text):
 
     pickup = data["pickups"][0]
 
-    # 第二則
+    # 第二則：帶代駕、上車地、附加資訊與備註
     second = []
     if data["booking_type"]:
         second.append(data["booking_type"])
     second.append(f"⬆️{pickup}")
+    if data["vehicle"]:
+        second.append(data["vehicle"])
     if data["note"]:
         second.append(data["note"])
     replies.append("\n".join(second))
@@ -1217,6 +1219,8 @@ def build_reply_texts(text):
             first_line += f" {data['booking_type']}"
 
         fourth = [first_line, f"⬆️{pickup}"]
+        if data["vehicle"]:
+            fourth.append(data["vehicle"])
         if data["note"]:
             fourth.append(data["note"])
         replies.append("\n".join(fourth))
