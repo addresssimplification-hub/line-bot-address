@@ -16,7 +16,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-BOT_VERSION = "v3.4.1"
+BOT_VERSION = "v3.5.0"
 GROUP_ID = "C68622c8e7215bffc165b1f657c148b4e"
 
 
@@ -85,6 +85,7 @@ NOTE_LABELS = ("其他備註", "其他備注", "備註", "備注")
 PICKUP_LABELS = (
     "第一個上車點", "第二個上車點", "第三個上車點",
     "第二上車", "第三上車",
+    "⬆️上車點", "⬆上車點", "上車點",
     "上車地址", "上車地點", "上車地", "上車",
     "⬆️位置", "⬆位置", "出發地", "出發", "起點", "起",
     "🔺上車", "⬆️", "⬆", "🔺", "上"
@@ -93,6 +94,7 @@ PICKUP_LABELS = (
 DROPOFF_LABELS = (
     "第一個下車點", "第二個下車點", "第三個下車點",
     "第二下車", "第三下車",
+    "⬇️下車點", "⬇下車點", "下車點",
     "下車地址", "下車地點", "下車地", "下車",
     "到達", "終點", "目的地", "目地", "目的●", "目的",
     "🔻下車", "🔽", "🔻", "下"
@@ -104,14 +106,14 @@ FIELD_PREFIXES = (
     "行李數量", "行李數", "行李箱",
     "航班", "航班編號", "航班號碼",
     "接機／送機", "接機/送機",
-    "Line匿稱", "Line暱稱", "Line名字", "LINE名字", "車款",
+    "Line匿稱", "Line暱稱", "Line名字", "LINE名字", "姓名", "名字", "車款",
     *PHONE_LABELS, *NOTE_LABELS
 )
 
 
 @lru_cache(maxsize=256)
 def normalize_text(text):
-    """統一解析標點，並拆開常見的黏欄位。"""
+    """統一解析標點，並拆開常見黏欄位與上下車標籤。"""
     t = (
         text.replace("\u3000", " ")
             .replace("：", ":")
@@ -119,19 +121,22 @@ def normalize_text(text):
             .replace("／", "/")
     )
 
-    # 下車地址:潮汽車旅館。人數:1
     t = re.sub(
         r"[。．]\s*(?=(?:叫車日期|日期|時間|人數|乘坐人數|乘車人數|"
         r"手機|手機號碼|電話|TEL|連絡電話|聯絡電話|"
         r"行李數量|行李數|行李箱|備註|備注|其他備註|其他備注|"
-        r"車款|Line名字|LINE名字)\s*:)",
+        r"車款|姓名|名字|Line名字|LINE名字)\s*:)",
         "\n", t, flags=re.I
     )
 
-    # 地址後直接黏「目的地/目地」
     t = re.sub(
         r"(?<=[號巷弄路街區市廈口）)])\s*(?=(?:目的地|目地)\s*:)",
         "\n", t
+    )
+
+    t = re.sub(
+        r"(?<!^)(?=(?:⬆️?上車點|⬇️?下車點|🔺上車|🔻下車|🔽下車))",
+        "\n", t, flags=re.M
     )
     return t
 
@@ -276,6 +281,7 @@ def reorder_reversed_address(addr):
 def clean_address(addr):
     s = reorder_reversed_address(addr.strip())
     s = re.sub(r"^[：:；●\s]+", "", s)
+    landmark_prefix = ""
 
     # 多點編號
     s = re.sub(
@@ -288,9 +294,11 @@ def clean_address(addr):
     # 若前方有明顯雜訊，但後面出現正式縣市/國名，從正式位置開始
     m = re.search(r"(台灣|臺灣|台北市|臺北市|新北市|桃園市)", s)
     if m and m.start() > 0:
-        prefix_noise = s[:m.start()]
-        # 正常郵遞區號或短雜訊都可丟棄；避免切掉真正路名
-        if re.fullmatch(r"[\dA-Za-z骯髒亂碼\s]{1,8}", prefix_noise) or re.fullmatch(r"\d{3,6}", prefix_noise):
+        prefix = s[:m.start()].strip()
+        if re.fullmatch(r"[\d骯髒亂碼\s]{1,8}", prefix) or re.fullmatch(r"\d{3,6}", prefix):
+            s = s[m.start():]
+        elif re.search(r"[A-Za-z]", prefix):
+            landmark_prefix = re.sub(r"\s+", " ", prefix).strip()
             s = s[m.start():]
 
     # 郵遞區號 3~6 碼
@@ -300,6 +308,7 @@ def clean_address(addr):
     s = re.sub(r"^(?:台灣|臺灣)", "", s)
     s = re.sub(r"^(?:台北市|臺北市|新北市|桃園市|北市)", "", s)
     s = re.sub(r"^(?:台北|臺北|新北)(?=[\u4e00-\u9fff]{1,4}區)", "", s)
+    s = re.sub(r"^桃園(?=[\u4e00-\u9fff]{1,4}區)", "", s)
 
     known_districts = (
         "中山|松山|大同|萬華|信義|內湖|南港|士林|北投|文山|中正|大安|"
@@ -338,7 +347,7 @@ def clean_address(addr):
             # 裸地名與地標不補；「中正路」這類路名也不補
             if (
                 tail
-                and not re.match(r"^(?:路|街|巷|弄)", tail)
+                and not re.match(r"^(?:路|街|巷|弄|東路|西路|南路|北路|東街|西街|南街|北街)", tail)
                 and re.search(r"(路|街|巷|弄|號)", tail)
                 and not re.search(r"(拉麵|餐廳|KTV|百貨|醫院|學校|夜市|捷運)", s)
             ):
@@ -349,39 +358,53 @@ def clean_address(addr):
         s = re.sub(r"(?:上車|下車|地址|地點)$", "", s)
 
     s = re.sub(r"\s+", "", s)
+    if landmark_prefix:
+        return f"{landmark_prefix} {s.strip()}".strip()
     return s.strip()
 
 
 def parse_date(text):
     t = normalize_text(text)
     now = datetime.now(ZoneInfo("Asia/Taipei"))
-
     date_label = r"(?:叫車日期|日期)(?:\s*\([^)]*\)|\s*（[^）]*）)?"
 
+    if re.search(r"(?:時間|上車時間|日期|叫車日期)\s*:?[^\n]*明天", t):
+        from datetime import timedelta
+        d = now + timedelta(days=1)
+        return f"{d.month}/{d.day}"
+
     if re.search(
-        rf"{date_label}\s*:\s*(?:當日免填|今日免填|今天|今日|現在|立即|馬上|立刻)",
+        rf"{date_label}\s*:?\s*(?:當日免填|今日免填|今天|今日|現在|立即|馬上|立刻)",
         t
     ):
         return ""
 
-    m = re.search(rf"{date_label}\s*:\s*(\d{{4}})[/-](\d{{1,2}})[/-](\d{{1,2}})", t)
+    m = re.search(rf"{date_label}\s*:?\s*(\d{{4}})[/-](\d{{1,2}})[/-](\d{{1,2}})", t)
     if m:
         month, day = int(m.group(2)), int(m.group(3))
         if (month, day) == (now.month, now.day):
             return ""
         return f"{month}/{day}"
 
-    m = re.search(rf"{date_label}\s*:\s*(\d{{1,2}})[/-](\d{{1,2}})", t)
+    m = re.search(rf"{date_label}\s*:?\s*(\d{{1,2}})[/-](\d{{1,2}})", t)
     if m:
         month, day = int(m.group(1)), int(m.group(2))
         if (month, day) == (now.month, now.day):
             return ""
         return f"{month}/{day}"
 
-    # 極簡：8/30 TG634
     m = re.search(
-        r"(?m)^\s*(\d{1,2})[/-](\d{1,2})"
-        r"(?=\s+(?:[A-Za-z]{1,3}\d{2,4}|\d[A-Za-z]\d{2,4})\b)",
+        r"(?m)^\s*(\d{1,2})[/-](\d{1,2})(?=\s*(?:凌晨|早上|上午|中午|下午|晚上))",
+        t
+    )
+    if m:
+        month, day = int(m.group(1)), int(m.group(2))
+        if (month, day) == (now.month, now.day):
+            return ""
+        return f"{month}/{day}"
+
+    m = re.search(
+        r"(?m)^\s*(\d{1,2})[/-](\d{1,2})(?=\s+(?:[A-Za-z]{1,3}\d{2,4}|\d[A-Za-z]\d{2,4})\b)",
         t, re.I
     )
     if m:
@@ -390,7 +413,6 @@ def parse_date(text):
             return ""
         return f"{month}/{day}"
 
-    # 極簡：8/26 03:30 ...
     m = re.search(r"(?m)^\s*(\d{1,2})[/-](\d{1,2})(?=\s+(?:\d{1,2}:\d{2}|\d{4})\b)", t)
     if m:
         month, day = int(m.group(1)), int(m.group(2))
@@ -399,7 +421,6 @@ def parse_date(text):
         return f"{month}/{day}"
 
     return ""
-
 
 def convert_time(period, hour, minute):
     if period in ("下午", "晚上") and hour < 12:
@@ -441,6 +462,10 @@ def _booking_target_datetime(text, hour, minute):
     target_date = now.date()
     explicit_date = False
 
+    if re.search(r"(?:時間|上車時間|日期|叫車日期)\s*:?[^\n]*明天", t):
+        target_date = (now + timedelta(days=1)).date()
+        explicit_date = True
+
     m = re.search(
         r"(?:叫車日期|日期)(?:\s*\([^)]*\)|\s*（[^）]*）)?\s*:\s*"
         r"(\d{4})[/-](\d{1,2})[/-](\d{1,2})",
@@ -459,7 +484,11 @@ def _booking_target_datetime(text, hour, minute):
             t
         )
         if not m:
-            m = re.search(r"(?m)^\s*(\d{1,2})[/-](\d{1,2})(?=\s+\d{1,2}:\d{2})", t)
+            m = re.search(
+                r"(?m)^\s*(\d{1,2})[/-](\d{1,2})"
+                r"(?=\s*(?:(?:凌晨|早上|上午|中午|下午|晚上)\s*)?\d{1,2}(?::\d{2}|點))",
+                t
+            )
 
         if m:
             month, day = int(m.group(1)), int(m.group(2))
@@ -521,6 +550,30 @@ def parse_time(text):
     if m and looks_like_address(m.group(1)):
         pass
 
+    # 明天早上11點30 / 明天下午3點 / 明天晚上8點半
+    m = re.search(
+        rf"{label}\s*:\s*明天\s*(凌晨|早上|上午|中午|下午|晚上)?\s*"
+        rf"(\d{{1,2}})\s*點\s*(?:(\d{{1,2}})\s*分?|半)?",
+        t
+    )
+    if m:
+        period = m.group(1) or ""
+        raw_hour = int(m.group(2))
+        minute = 30 if ("半" in m.group(0) and m.group(3) is None) else int(m.group(3) or 0)
+        hour, minute = convert_time(period, raw_hour, minute)
+        return format_time_with_10min_rule(t, hour, minute)
+
+    # 9/13早上 10:15分
+    m = re.search(
+        r"(?m)^\s*\d{1,2}[/-]\d{1,2}\s*"
+        r"(凌晨|早上|上午|中午|下午|晚上)?\s*"
+        r"(\d{1,2})[:.](\d{2})\s*分?\s*$",
+        t
+    )
+    if m:
+        hour, minute = convert_time(m.group(1) or "", int(m.group(2)), int(m.group(3)))
+        return format_time_with_10min_rule(t, hour, minute)
+
     # 今日凌晨02:00 / 今日下午3:20
     m = re.search(
         rf"{label}\s*:\s*今日\s*(凌晨|早上|上午|中午|下午|晚上)?\s*(\d{{1,2}})[:.](\d{{2}})",
@@ -578,18 +631,20 @@ def parse_time(text):
         if 0 <= hour <= 23 and 0 <= minute <= 59:
             return format_time_with_10min_rule(t, hour, minute)
 
-    # 上午/下午 + 幾點
+    # 上午/下午 + 幾點 / 幾點30 / 幾點半
     m = re.search(
-        rf"{label}\s*:\s*(凌晨|早上|上午|中午|下午|晚上)?\s*(\d{{1,2}})\s*點",
+        rf"{label}\s*:\s*(凌晨|早上|上午|中午|下午|晚上)?\s*"
+        rf"(\d{{1,2}})\s*點\s*(?:(\d{{1,2}})\s*分?|半)?",
         t
     )
     if m:
         period = m.group(1) or ""
         raw = int(m.group(2))
+        minute = 30 if ("半" in m.group(0) and m.group(3) is None) else int(m.group(3) or 0)
         if period:
-            hour, minute = convert_time(period, raw, 0)
+            hour, minute = convert_time(period, raw, minute)
         else:
-            hour, minute = nearest_ambiguous_hour(raw), 0
+            hour = nearest_ambiguous_hour(raw)
         return format_time_with_10min_rule(t, hour, minute)
 
     # 08:35pm
@@ -699,6 +754,14 @@ def parse_luggage(text):
 
     if re.search(r"(?m)^(?:行李數量|行李數|行李箱)\s*:\s*[XxＸｘ]\s*$", t):
         return ""
+    size_star_items = re.findall(
+        r"\d{1,2}\s*(?:吋|寸)\s*(?:行李箱|行李|箱)?\s*(?:\*|x|X|×)\s*(\d+)",
+        t,
+        re.I
+    )
+    if size_star_items:
+        return f"🧳{sum(int(x) for x in size_star_items)}件"
+
 
     m = re.search(
         r"(?m)^(?:行李數量|行李數|行李箱)\s*:\s*"
@@ -902,13 +965,31 @@ def parse_addresses(text):
         parts = [x.strip() for x in re.split(r"再到", s) if x.strip()]
         return parts if parts else []
 
+    # 無標籤「A / 到 / B」格式：
+    # 先把「到」前一行視為上車點，後面再切換到下車模式。
+    standalone_to_index = next(
+        (i for i, value in enumerate(lines) if value == "到"),
+        None
+    )
+    if standalone_to_index is not None and standalone_to_index > 0:
+        previous = lines[standalone_to_index - 1]
+        if looks_like_address(previous):
+            append_clean("pickup", previous)
+
     def flush():
         nonlocal current_parts
         if not current_parts or current_mode not in ("pickup", "dropoff"):
             current_parts = []
             return
 
-        merged = re.sub(r"\s+", "", "".join(current_parts))
+        if (
+            len(current_parts) >= 2
+            and not looks_like_address(current_parts[0])
+            and any(looks_like_address(x) for x in current_parts[1:])
+        ):
+            merged = current_parts[0].strip() + " " + "".join(current_parts[1:])
+        else:
+            merged = re.sub(r"\s+", "", "".join(current_parts))
 
         if current_mode == "dropoff" and ("先到" in merged or "再到" in merged):
             for point in split_drop_sequence(merged):
@@ -920,12 +1001,16 @@ def parse_addresses(text):
     for raw in lines:
         line = raw.strip()
 
-        # 人數相關文字不能被當成地址或額外下車點
-        if re.fullmatch(
-            r"(?:人|人數|乘坐人數|乘車人數|乘客人數|"
-            r"\d+\s*人(?:\s*[+➕＋]\s*\d+)?|"
-            r"[一二兩三四五六七八九十]+\s*人)",
-            line
+        # 人數相關文字不能被當成地址或額外下車點。
+        # 即使後面還接行李資訊，例如「7人 23寸行李箱*5」也要排除。
+        if (
+            re.fullmatch(
+                r"(?:人|人數|乘坐人數|乘車人數|乘客人數|"
+                r"\d+\s*人(?:\s*[+➕＋]\s*\d+)?|"
+                r"[一二兩三四五六七八九十]+\s*人)",
+                line
+            )
+            or re.match(r"^\d+\s*人\b", line)
         ):
             flush()
             current_mode = None
@@ -935,7 +1020,7 @@ def parse_addresses(text):
             continue
 
         # 額外資訊欄，不讓它被地址解析吃掉
-        if re.match(r"^(?:Line名字|LINE名字|Line匿稱|Line暱稱|車款)\s*:", line, re.I):
+        if re.match(r"^(?:Line名字|LINE名字|Line匿稱|Line暱稱|姓名|名字|車款)\s*:", line, re.I):
             flush()
             current_mode = None
             continue
@@ -951,6 +1036,12 @@ def parse_addresses(text):
             if re.match(r"^-?[\d\- ]+$", line):
                 continue
             skip_phone_continuation = False
+
+        if line == "到":
+            flush()
+            current_mode = "dropoff"
+            current_parts = []
+            continue
 
         # 上車時間誤填地址
         if line.startswith("上車時間"):
@@ -1037,7 +1128,7 @@ def parse_addresses(text):
                 continue
             if "行李" in line and re.search(r"\d", line):
                 continue
-            if re.match(r"^(?:Line名字|LINE名字|Line匿稱|Line暱稱|車款)\s*:", line, re.I):
+            if re.match(r"^(?:Line名字|LINE名字|Line匿稱|Line暱稱|姓名|名字|車款)\s*:", line, re.I):
                 continue
 
             if looks_like_address(line):
