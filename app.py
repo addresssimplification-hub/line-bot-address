@@ -16,7 +16,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-BOT_VERSION = "v3.5.0"
+BOT_VERSION = "v3.5.1"
 GROUP_ID = "C68622c8e7215bffc165b1f657c148b4e"
 
 
@@ -84,6 +84,7 @@ NOTE_LABELS = ("其他備註", "其他備注", "備註", "備注")
 
 PICKUP_LABELS = (
     "第一個上車點", "第二個上車點", "第三個上車點",
+    "上🚘",
     "第二上車", "第三上車",
     "⬆️上車點", "⬆上車點", "上車點",
     "上車地址", "上車地點", "上車地", "上車",
@@ -93,7 +94,9 @@ PICKUP_LABELS = (
 
 DROPOFF_LABELS = (
     "第一個下車點", "第二個下車點", "第三個下車點",
-    "第二下車", "第三下車",
+    "第一下車地址", "第二下車地址", "第三下車地址",
+    "第一下車", "第二下車", "第三下車",
+    "下🚘",
     "⬇️下車點", "⬇下車點", "下車點",
     "下車地址", "下車地點", "下車地", "下車",
     "到達", "終點", "目的地", "目地", "目的●", "目的",
@@ -135,7 +138,7 @@ def normalize_text(text):
     )
 
     t = re.sub(
-        r"(?<!^)(?=(?:⬆️?上車點|⬇️?下車點|🔺上車|🔻下車|🔽下車))",
+        r"(?<!^)(?=(?:⬆️?上車點|⬇️?下車點|🔺上車|🔻下車|🔽下車|上🚘|下🚘))",
         "\n", t, flags=re.M
     )
     return t
@@ -157,6 +160,9 @@ def is_booking_text(text):
         "行李", "💰", "$", "＄", "固定"
     ]
     if any(k in text for k in keywords):
+        return True
+
+    if re.search(r"(?m)^\s*(?:上|下)(?:🚘)?\s*[:：]", text):
         return True
 
     t = normalize_text(text)
@@ -286,7 +292,7 @@ def clean_address(addr):
     # 多點編號
     s = re.sub(
         r"^(?:\(加?\d+\)|（加?\d+）|[①②③④⑤⑥⑦⑧⑨⑩]|\d+[.、]|"
-        r"[1-9](?=[\u4e00-\u9fff]))\s*",
+        r"[1-9](?=[\u4e00-\u9fff])(?!號))\s*",
         "",
         s
     )
@@ -752,7 +758,7 @@ def parse_people_count(text):
 def parse_luggage(text):
     t = normalize_text(text)
 
-    if re.search(r"(?m)^(?:行李數量|行李數|行李箱)\s*:\s*[XxＸｘ]\s*$", t):
+    if re.search(r"(?m)^(?:行李數量|行李數|行李箱|行李)\s*:\s*[XxＸｘ]\s*$", t):
         return ""
     size_star_items = re.findall(
         r"\d{1,2}\s*(?:吋|寸)\s*(?:行李箱|行李|箱)?\s*(?:\*|x|X|×)\s*(\d+)",
@@ -764,14 +770,14 @@ def parse_luggage(text):
 
 
     m = re.search(
-        r"(?m)^(?:行李數量|行李數|行李箱)\s*:\s*"
+        r"(?m)^(?:行李數量|行李數|行李箱|行李)\s*:\s*"
         r"(\d+)\s*(?:-|~|～|至)\s*(\d+)\s*(?:個|件|箱)?\s*$",
         t
     )
     if m:
         return f"🧳{m.group(1)}-{m.group(2)}件"
 
-    m = re.search(r"(?m)^(?:行李數量|行李數|行李箱)\s*:\s*(\d+)\s*(?:個|件|箱)?\s*$", t)
+    m = re.search(r"(?m)^(?:行李數量|行李數|行李箱|行李)\s*:\s*(\d+)\s*(?:個|件|箱)?\s*$", t)
     if m:
         n = int(m.group(1))
         return f"🧳{n}件" if n > 0 else ""
@@ -895,6 +901,8 @@ def parse_notes(text):
     for raw in collected:
         s = raw.strip()
         if not s or s in ignore or is_noise_line(s) or is_phone_only(s):
+            continue
+        if re.fullmatch(r"[=＝\-＿_—─]{3,}", s):
             continue
 
         s = re.sub(r"(^|[\s，,、/]+)(接機|送機)(?=$|[\s，,、/]+)", " ", s)
@@ -1081,7 +1089,7 @@ def parse_addresses(text):
             continue
 
         if current_mode in ("pickup", "dropoff") and re.match(
-            r"^(?:\(加?\d+\)|（加?\d+）|[①②③④⑤⑥⑦⑧⑨⑩]|\d+[.、]|[1-9](?=[\u4e00-\u9fff]))",
+            r"^(?:\(加?\d+\)|（加?\d+）|[①②③④⑤⑥⑦⑧⑨⑩]|\d+[.、]|[1-9](?=[\u4e00-\u9fff])(?!號))",
             line
         ):
             flush()
