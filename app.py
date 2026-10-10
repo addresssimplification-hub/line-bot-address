@@ -16,7 +16,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-BOT_VERSION = "v3.6.1"
+BOT_VERSION = "v3.6.2"
 GROUP_ID = "C68622c8e7215bffc165b1f657c148b4e"
 
 
@@ -138,7 +138,7 @@ DROPOFF_LABELS = (
     "⬇️下車點", "⬇下車點", "下車點",
     "下車地址", "下車地點", "下車地", "下車",
     "到達", "終點", "目的地", "目地", "目的●", "目的",
-    "🔻下車", "🔽", "🔻", "下"
+    "🔻下車", "⬇️", "⬇", "🔽", "🔻", "下"
 )
 
 FIELD_PREFIXES = (
@@ -669,6 +669,14 @@ def parse_time(text):
     if m:
         hour, minute = convert_time(m.group(1) or "", int(m.group(2)), int(m.group(3)))
         return format_time_with_10min_rule(t, hour, minute)
+
+    # 極簡格式：預約2:20 / 預約 2:20
+    m = re.search(r"(?m)^\s*預約\s*(\d{1,2})[:：.](\d{2})\s*$", t)
+    if m:
+        raw_hour, minute = int(m.group(1)), int(m.group(2))
+        if 0 <= raw_hour <= 23 and 0 <= minute <= 59:
+            hour = nearest_ambiguous_hour(raw_hour) if raw_hour <= 12 else raw_hour
+            return format_time_with_10min_rule(t, hour, minute)
 
     # 今日凌晨02:00 / 今日下午3:20
     m = re.search(
