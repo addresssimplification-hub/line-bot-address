@@ -16,7 +16,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-BOT_VERSION = "v3.5.1"
+BOT_VERSION = "v3.6.0"
 GROUP_ID = "C68622c8e7215bffc165b1f657c148b4e"
 
 
@@ -63,16 +63,53 @@ def notify_startup():
 
 
 # ============================================================
+# v3.6.0 MASTER FEATURE MANIFEST
+#
+# 1. 日期：
+#    年/月/日、月/日、日期9/13、單日 23 / 23號、今天/今日/當日、
+#    明天、同日隱藏。
+# 2. 時間：
+#    HH:MM、四碼 0500/2300、AM/PM、0600pm、
+#    中文時段、幾點/幾點半/幾點30、等等2、今日/明天、
+#    航班抵達時間、±10分鐘隱藏。
+# 3. 地址：
+#    縣市/郵遞區號/里/鄰清理、行政區補全、反向地址、
+#    多行地址、地標+地址、單字上/下、emoji標籤、多上車/多下車、
+#    無標籤 A/到/B、同一行黏標籤。
+# 4. 人數：
+#    數字/中文數字、2大2小、一般單 5+ 才顯示、
+#    不自動加價、明確 +100 才保留。
+# 5. 行李：
+#    行李：3、範圍 2-3、吋/寸 * 數量、×/x/*、機場單顯示。
+# 6. 機場：
+#    接機/送機、航班、T1/T2/航廈、機場關鍵字自動判斷。
+# 7. 車型：
+#    七座/7座/七人座與加價，不能誤當乘客人數。
+# 8. 備註：
+#    ✅格式、空值/電話/固定模板/提醒文字排除、金額後黏備註。
+# 9. 金額：
+#    💰/$/＄/固定/錢/收/元；裸四碼優先當時間。
+# 10. 代駕：
+#    代駕預約辨識並帶到第一、第二、第四則。
+# 11. 多訊息回覆：
+#    完整單、上車單、取消單、有時間才回 *HH:MM。
+# 12. 效能：
+#    normalize_text cache + 每張單 parse_booking_data 只解析一次。
+# ============================================================
+
+# ============================================================
 # v3.1.0 Parser
 # 流程：正規化 → 欄位解析 → 地址合併/清理 → 商業規則 → 固定輸出
 # ============================================================
 
 NOISE_PATTERNS = [
-    r"^麻煩填寫完整地址",
-    r"^麻煩提供正確電話",
+    r"^[‼️!！\s]*麻煩填寫完整地址",
+    r"^[‼️!！\s]*麻煩提供正確電話",
+    r"^[‼️!！\s]*麻煩.*完整地址.*電話.*提供",
+    r"^[‼️!！\s]*電話.*未提供.*不派車",
     r"^💟?精采派車預約💟?$",
     r"^✠.*新多元服務.*✠$",
-    r"^[—\-_=]{3,}$",
+    r"^[—\-_=＝＿_─]{3,}$",
 ]
 
 PHONE_LABELS = (
@@ -106,7 +143,7 @@ DROPOFF_LABELS = (
 FIELD_PREFIXES = (
     "叫車日期", "日期", "時間", "上車時間",
     "人數", "乘坐人數", "乘車人數",
-    "行李數量", "行李數", "行李箱",
+    "行李數量", "行李數", "行李箱", "行李",
     "航班", "航班編號", "航班號碼",
     "接機／送機", "接機/送機",
     "Line匿稱", "Line暱稱", "Line名字", "LINE名字", "姓名", "名字", "車款",
@@ -284,12 +321,13 @@ def reorder_reversed_address(addr):
 
     return s
 
+
 def clean_address(addr):
     s = reorder_reversed_address(addr.strip())
     s = re.sub(r"^[：:；●\s]+", "", s)
     landmark_prefix = ""
 
-    # 多點編號
+    # 多點編號；但「2號」不能被當成編號 2 + 號
     s = re.sub(
         r"^(?:\(加?\d+\)|（加?\d+）|[①②③④⑤⑥⑦⑧⑨⑩]|\d+[.、]|"
         r"[1-9](?=[\u4e00-\u9fff])(?!號))\s*",
@@ -297,7 +335,7 @@ def clean_address(addr):
         s
     )
 
-    # 若前方有明顯雜訊，但後面出現正式縣市/國名，從正式位置開始
+    # 前面若是地標名稱，後面才接正式地址，保留地標
     m = re.search(r"(台灣|臺灣|台北市|臺北市|新北市|桃園市)", s)
     if m and m.start() > 0:
         prefix = s[:m.start()].strip()
@@ -307,25 +345,44 @@ def clean_address(addr):
             landmark_prefix = re.sub(r"\s+", " ", prefix).strip()
             s = s[m.start():]
 
-    # 郵遞區號 3~6 碼
+    # 郵遞區號
     s = re.sub(r"^\d{3,6}(?=[\u4e00-\u9fff])", "", s)
 
-    # 國名/縣市
+    # 國名 / 縣市
     s = re.sub(r"^(?:台灣|臺灣)", "", s)
     s = re.sub(r"^(?:台北市|臺北市|新北市|桃園市|北市)", "", s)
     s = re.sub(r"^(?:台北|臺北|新北)(?=[\u4e00-\u9fff]{1,4}區)", "", s)
-    s = re.sub(r"^桃園(?=[\u4e00-\u9fff]{1,4}區)", "", s)
 
     known_districts = (
         "中山|松山|大同|萬華|信義|內湖|南港|士林|北投|文山|中正|大安|"
         "板橋|新莊|三重|中和|永和|土城|樹林|汐止|蘆洲|泰山|林口|淡水|"
         "新店|五股|深坑|三峽|鶯歌|瑞芳|金山|萬里|中壢|平鎮|八德|龜山|"
-        "蘆竹|大溪|楊梅|龍潭|大園|觀音|新屋"
+        "蘆竹|大溪|楊梅|龍潭|大園|觀音|新屋|桃園"
     )
+
+    # 桃園中壢區 -> 中壢區；但桃園區本身保留
+    s = re.sub(
+        rf"^桃園(?=(?:(?:{known_districts})區))",
+        "",
+        s
+    )
+
+    # 雙行政區衝突：桃園區龍潭區 -> 龍潭區
+    # 若來源真的連續寫兩個「XX區」，以後面的行政區為準。
+    m = re.match(
+        rf"^(?P<first>(?:{known_districts})區)(?P<second>(?:{known_districts})區)(?P<rest>.*)$",
+        s
+    )
+    if m:
+        s = m.group("second") + m.group("rest")
+
+    # 市新莊區 -> 新莊區
     s = re.sub(rf"^市(?=(?:{known_districts})區)", "", s)
 
-    # 行政區後面的里名
-    s = re.sub(r"(?<=[區鄉鎮市])[\u4e00-\u9fff]{1,8}里", "", s)
+    # 行政區後「XX里 + XX鄰」一起移除
+    s = re.sub(r"(?<=[區鄉鎮市])[\u4e00-\u9fff]{1,8}里(?:\d{1,3}鄰)?", "", s)
+    # 若鄰仍殘留也移除
+    s = re.sub(r"(?<=[區鄉鎮市])\d{1,3}鄰", "", s)
 
     # 航廈
     s = re.sub(r"(第一|第二)航(?!廈)", r"\1航廈", s)
@@ -338,7 +395,7 @@ def clean_address(addr):
     elif re.fullmatch(r"(?i:T2)", s):
         s = "桃園第二航廈"
 
-    # 常見行政區省略「區」：只在後面明顯接道路時補，避免「中正路」誤變中正區路
+    # 常見行政區省略「區」：只在後面明顯接地址時補
     districts = [
         "中山", "松山", "大同", "萬華", "信義", "內湖", "南港", "士林",
         "北投", "文山", "中正", "大安", "板橋", "新莊", "三重", "中和",
@@ -350,23 +407,30 @@ def clean_address(addr):
     for d in sorted(districts, key=len, reverse=True):
         if s.startswith(d) and not s.startswith(d + "區"):
             tail = s[len(d):]
-            # 裸地名與地標不補；「中正路」這類路名也不補
+            # 中山北路 / 中山南路 / 中正路等是路名，不補區
             if (
                 tail
-                and not re.match(r"^(?:路|街|巷|弄|東路|西路|南路|北路|東街|西街|南街|北街)", tail)
+                and not re.match(
+                    r"^(?:路|街|巷|弄|東路|西路|南路|北路|"
+                    r"東街|西街|南街|北街)",
+                    tail
+                )
                 and re.search(r"(路|街|巷|弄|號)", tail)
                 and not re.search(r"(拉麵|餐廳|KTV|百貨|醫院|學校|夜市|捷運)", s)
             ):
                 s = d + "區" + tail
             break
 
+    # 地址尾端誤黏「上車/下車」
     if re.search(r"(路|街|巷|弄|號|航廈|機場|旅館|飯店|社區)", s):
         s = re.sub(r"(?:上車|下車|地址|地點)$", "", s)
 
     s = re.sub(r"\s+", "", s)
+
     if landmark_prefix:
         return f"{landmark_prefix} {s.strip()}".strip()
     return s.strip()
+
 
 
 def parse_date(text):
@@ -374,13 +438,14 @@ def parse_date(text):
     now = datetime.now(ZoneInfo("Asia/Taipei"))
     date_label = r"(?:叫車日期|日期)(?:\s*\([^)]*\)|\s*（[^）]*）)?"
 
+    # 明天可寫在日期或時間欄
     if re.search(r"(?:時間|上車時間|日期|叫車日期)\s*:?[^\n]*明天", t):
         from datetime import timedelta
         d = now + timedelta(days=1)
         return f"{d.month}/{d.day}"
 
     if re.search(
-        rf"{date_label}\s*:?\s*(?:當日免填|今日免填|今天|今日|現在|立即|馬上|立刻)",
+        rf"{date_label}\s*:?\s*(?:當日免填|今日免填|今天|今日|當日|現在|立即|馬上|立刻)",
         t
     ):
         return ""
@@ -399,6 +464,16 @@ def parse_date(text):
             return ""
         return f"{month}/{day}"
 
+    # 舊版功能：日期：23 / 日期23號 / 日期23日
+    m = re.search(rf"{date_label}\s*:?\s*(\d{{1,2}})\s*(?:號|日)?(?:\s|$)", t)
+    if m:
+        day = int(m.group(1))
+        if 1 <= day <= 31:
+            if day == now.day:
+                return ""
+            return f"{now.month}/{day}"
+
+    # 9/13早上 10:15分
     m = re.search(
         r"(?m)^\s*(\d{1,2})[/-](\d{1,2})(?=\s*(?:凌晨|早上|上午|中午|下午|晚上))",
         t
@@ -409,6 +484,7 @@ def parse_date(text):
             return ""
         return f"{month}/{day}"
 
+    # 8/30 TG634
     m = re.search(
         r"(?m)^\s*(\d{1,2})[/-](\d{1,2})(?=\s+(?:[A-Za-z]{1,3}\d{2,4}|\d[A-Za-z]\d{2,4})\b)",
         t, re.I
@@ -419,7 +495,11 @@ def parse_date(text):
             return ""
         return f"{month}/{day}"
 
-    m = re.search(r"(?m)^\s*(\d{1,2})[/-](\d{1,2})(?=\s+(?:\d{1,2}:\d{2}|\d{4})\b)", t)
+    # 8/26 03:30 / 8/9 2200
+    m = re.search(
+        r"(?m)^\s*(\d{1,2})[/-](\d{1,2})(?=\s+(?:\d{1,2}:\d{2}|\d{4})\b)",
+        t
+    )
     if m:
         month, day = int(m.group(1)), int(m.group(2))
         if (month, day) == (now.month, now.day):
@@ -459,6 +539,7 @@ def nearest_ambiguous_hour(hour):
     return min(candidates).hour
 
 
+
 def _booking_target_datetime(text, hour, minute):
     """建立預約時間；明確日期優先，否則以今天/最近時刻判斷。"""
     from datetime import timedelta
@@ -467,14 +548,14 @@ def _booking_target_datetime(text, hour, minute):
     now = datetime.now(ZoneInfo("Asia/Taipei"))
     target_date = now.date()
     explicit_date = False
+    date_label = r"(?:叫車日期|日期)(?:\s*\([^)]*\)|\s*（[^）]*）)?"
 
     if re.search(r"(?:時間|上車時間|日期|叫車日期)\s*:?[^\n]*明天", t):
         target_date = (now + timedelta(days=1)).date()
         explicit_date = True
 
     m = re.search(
-        r"(?:叫車日期|日期)(?:\s*\([^)]*\)|\s*（[^）]*）)?\s*:\s*"
-        r"(\d{4})[/-](\d{1,2})[/-](\d{1,2})",
+        rf"{date_label}\s*:?\s*(\d{{4}})[/-](\d{{1,2}})[/-](\d{{1,2}})",
         t
     )
     if m:
@@ -485,14 +566,15 @@ def _booking_target_datetime(text, hour, minute):
             pass
     else:
         m = re.search(
-            r"(?:叫車日期|日期)(?:\s*\([^)]*\)|\s*（[^）]*）)?\s*:\s*"
-            r"(\d{1,2})[/-](\d{1,2})",
+            rf"{date_label}\s*:?\s*(\d{{1,2}})[/-](\d{{1,2}})",
             t
         )
+
         if not m:
             m = re.search(
                 r"(?m)^\s*(\d{1,2})[/-](\d{1,2})"
-                r"(?=\s*(?:(?:凌晨|早上|上午|中午|下午|晚上)\s*)?\d{1,2}(?::\d{2}|點))",
+                r"(?=\s*(?:(?:凌晨|早上|上午|中午|下午|晚上)\s*)?"
+                r"\d{1,2}(?::\d{2}|點)|\s+(?:\d{4}|[A-Za-z]{1,3}\d{2,4}))",
                 t
             )
 
@@ -508,17 +590,24 @@ def _booking_target_datetime(text, hour, minute):
                 explicit_date = True
             except ValueError:
                 pass
+        else:
+            # 日期：23 / 日期23號
+            m = re.search(rf"{date_label}\s*:?\s*(\d{{1,2}})\s*(?:號|日)?(?:\s|$)", t)
+            if m:
+                day = int(m.group(1))
+                try:
+                    target_date = datetime(now.year, now.month, day).date()
+                    explicit_date = True
+                except ValueError:
+                    pass
 
     target = datetime(
         target_date.year, target_date.month, target_date.day,
         hour, minute, tzinfo=ZoneInfo("Asia/Taipei")
     )
 
-    # 無明確日期：若是「今日」則不跨日；一般時刻允許午夜跨日
-    has_today_word = bool(re.search(r"(?:時間\s*:?\s*)?今日", t))
+    has_today_word = bool(re.search(r"(?:時間\s*:?\s*)?(?:今日|今天|當日)", t))
     if not explicit_date and not has_today_word:
-        # 只在「明顯是下一個午夜時刻」時跨日。
-        # 過去 10 分鐘內的時間保留今天，讓 ±10 分鐘規則能正常工作。
         if target < now and (now - target).total_seconds() > 10 * 60:
             if now.hour >= 18 and hour <= 6:
                 target += timedelta(days=1)
@@ -664,6 +753,18 @@ def parse_time(text):
             hour = 0
         return format_time_with_10min_rule(t, hour, minute)
 
+    # 舊版功能：0600pm / 0530am / 0600 pm
+    m = re.search(rf"{label}\s*:\s*(\d{{1,2}})(\d{{2}})\s*(am|pm)\b", t, re.I)
+    if m:
+        hour, minute = int(m.group(1)), int(m.group(2))
+        ap = m.group(3).lower()
+        if ap == "pm" and hour < 12:
+            hour += 12
+        elif ap == "am" and hour == 12:
+            hour = 0
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return format_time_with_10min_rule(t, hour, minute)
+
     # 0500 / 1830
     m = re.search(rf"{label}\s*:\s*(\d{{2}})(\d{{2}})\b", t)
     if m:
@@ -735,19 +836,53 @@ def chinese_num_to_int(s):
     return mapping.get(s, 0)
 
 
+
 def parse_people_count(text):
     t = normalize_text(text)
 
+    # 欄位內容整段抓出來，支援：5 / 5人 / 2大2小 / 二大二小
     m = re.search(
-        r"(?m)^(?:人數|乘坐人數|乘車人數)\s*:\s*"
-        r"([0-9一二兩三四五六七八九十]+)\s*(?:人)?",
+        r"(?m)^(?:人數|乘坐人數|乘車人數|乘客人數)\s*:\s*([^\n]*)$",
         t
     )
+    if m:
+        raw = m.group(1).strip()
+
+        mixed = re.findall(
+            r"([0-9一二兩三四五六七八九十]+)\s*(?:大|小)",
+            raw
+        )
+        if mixed:
+            n = sum(chinese_num_to_int(x) for x in mixed)
+            return n if 0 < n <= 20 else 0
+
+        m2 = re.search(r"([0-9一二兩三四五六七八九十]+)\s*(?:人)?", raw)
+        if m2:
+            n = chinese_num_to_int(m2.group(1))
+            return n if 0 < n <= 20 else 0
+
+    # 2大2小（無欄位標籤）
+    mixed = re.findall(
+        r"([0-9一二兩三四五六七八九十]+)\s*(?:大|小)",
+        t
+    )
+    if len(mixed) >= 2:
+        n = sum(chinese_num_to_int(x) for x in mixed)
+        if 0 < n <= 20:
+            return n
+
+    # 一般 3人
+    m = re.search(r"([0-9一二兩三四五六七八九十]+)\s*人", t)
     if m:
         n = chinese_num_to_int(m.group(1))
         return n if 0 < n <= 20 else 0
 
-    m = re.search(r"([0-9一二兩三四五六七八九十]+)\s*人", t)
+    # 備註裡明確「三個人」
+    m = re.search(
+        r"(?m)^(?:備註|備注|其他備註|其他備注)\s*:\s*.*?"
+        r"([0-9一二兩三四五六七八九十]+)\s*(?:個)?人",
+        t
+    )
     if m:
         n = chinese_num_to_int(m.group(1))
         return n if 0 < n <= 20 else 0
@@ -755,20 +890,27 @@ def parse_people_count(text):
     return 0
 
 
+
 def parse_luggage(text):
     t = normalize_text(text)
 
-    if re.search(r"(?m)^(?:行李數量|行李數|行李箱|行李)\s*:\s*[XxＸｘ]\s*$", t):
+    if re.search(
+        r"(?m)^(?:行李數量|行李數|行李箱|行李)\s*:\s*(?:0|無|沒有|無行李|沒行李|[XxＸｘ])\s*$",
+        t
+    ):
         return ""
+
+    # 23寸行李箱*5 19寸*1 / 27吋×1、29吋×1
     size_star_items = re.findall(
-        r"\d{1,2}\s*(?:吋|寸)\s*(?:行李箱|行李|箱)?\s*(?:\*|x|X|×)\s*(\d+)",
+        r"\d{1,2}\s*(?:吋|寸)\s*(?:行李箱|行李|箱)?\s*"
+        r"(?:\*|x|X|×)\s*(\d+)",
         t,
         re.I
     )
     if size_star_items:
         return f"🧳{sum(int(x) for x in size_star_items)}件"
 
-
+    # 行李：2-3
     m = re.search(
         r"(?m)^(?:行李數量|行李數|行李箱|行李)\s*:\s*"
         r"(\d+)\s*(?:-|~|～|至)\s*(\d+)\s*(?:個|件|箱)?\s*$",
@@ -777,25 +919,36 @@ def parse_luggage(text):
     if m:
         return f"🧳{m.group(1)}-{m.group(2)}件"
 
-    m = re.search(r"(?m)^(?:行李數量|行李數|行李箱|行李)\s*:\s*(\d+)\s*(?:個|件|箱)?\s*$", t)
+    # 行李：3
+    m = re.search(
+        r"(?m)^(?:行李數量|行李數|行李箱|行李)\s*:\s*(\d+)\s*(?:個|件|箱)?\s*$",
+        t
+    )
     if m:
         n = int(m.group(1))
         return f"🧳{n}件" if n > 0 else ""
 
+    # 2人2行李
     m = re.search(r"\d+\s*人\s*(\d+)\s*(?:個|件|箱)?\s*行李", t)
     if m:
         n = int(m.group(1))
         return f"🧳{n}件" if n > 0 else ""
 
+    # 2-3件
     m = re.search(r"(?<!\d)(\d+)\s*(?:-|~|～|至)\s*(\d+)\s*(?:個|件|箱)", t)
     if m:
         return f"🧳{m.group(1)}-{m.group(2)}件"
 
-    m = re.search(r"(\d+)\s*(?:個|件|箱)\s*(?:\d{2}\s*吋)?\s*行李", t)
+    # 3件 28吋 行李
+    m = re.search(r"(\d+)\s*(?:個|件|箱)\s*(?:\d{2}\s*(?:吋|寸))?\s*行李", t)
     if m:
         return f"🧳{int(m.group(1))}件"
 
-    size_items = re.findall(r"\d{2}\s*吋\s*(\d+)\s*(?:個|件|箱)?", t)
+    # 28吋 2件、24寸 1件
+    size_items = re.findall(
+        r"\d{2}\s*(?:吋|寸)\s*(\d+)\s*(?:個|件|箱)?",
+        t
+    )
     if size_items:
         return f"🧳{sum(int(x) for x in size_items)}件"
 
