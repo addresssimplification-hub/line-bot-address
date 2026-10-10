@@ -16,7 +16,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-BOT_VERSION = "v3.6.0"
+BOT_VERSION = "v3.6.1"
 GROUP_ID = "C68622c8e7215bffc165b1f657c148b4e"
 
 
@@ -104,6 +104,7 @@ def notify_startup():
 
 NOISE_PATTERNS = [
     r"^[‼️!！\s]*麻煩填寫完整地址",
+    r"^[‼️!！\s]*麻煩完整地址提供",
     r"^[‼️!！\s]*麻煩提供正確電話",
     r"^[‼️!！\s]*麻煩.*完整地址.*電話.*提供",
     r"^[‼️!！\s]*電話.*未提供.*不派車",
