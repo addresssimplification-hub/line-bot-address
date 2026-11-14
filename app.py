@@ -26,7 +26,7 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "").strip()
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-BOT_VERSION = "v4.0.0-shadow"
+BOT_VERSION = "v4.0.1-shadow"
 GROUP_ID = "C68622c8e7215bffc165b1f657c148b4e"
 
 
@@ -1118,6 +1118,75 @@ def parse_notes(text):
             unique.append(item)
     return "".join(unique)
 
+
+def parse_address_display_labels(text):
+    """
+    擷取客人原本使用的上下車標籤，只影響顯示、不影響地址解析。
+
+    裸「上 / 下」若只是獨立分隔行，維持原本預設顯示；
+    但「上：xxx / 下：xxx」會保留「上：/下：」。
+    """
+    source = normalize_text(text)
+    detected = []
+
+    pickup_labels = sorted(PICKUP_LABELS, key=len, reverse=True)
+    dropoff_labels = sorted(DROPOFF_LABELS, key=len, reverse=True)
+
+    for line in [x.strip() for x in source.splitlines() if x.strip()]:
+        found = None
+
+        for label in pickup_labels:
+            if not line.startswith(label):
+                continue
+            # 裸「上」只有在同一行有冒號時才視為顯示標籤；
+            # 單獨一行「上」仍只是結構分隔。
+            if label == "上" and not line.startswith("上:"):
+                continue
+            found = ("pickup", label)
+            break
+
+        if found is None:
+            for label in dropoff_labels:
+                if not line.startswith(label):
+                    continue
+                if label == "下" and not line.startswith("下:"):
+                    continue
+                found = ("dropoff", label)
+                break
+
+        if found is not None:
+            detected.append(found)
+
+    # 從原始文字中把客人使用的冒號型態抓回來（：或 :）。
+    raw = text
+    cursor = 0
+    pickups = []
+    dropoffs = []
+
+    for mode, label in detected:
+        pos = raw.find(label, cursor)
+        display = label
+
+        if pos >= 0:
+            after = pos + len(label)
+            m = re.match(r"\s*([:：])?", raw[after:])
+            if m and m.group(1):
+                display += m.group(1)
+            cursor = after + (m.end() if m else 0)
+
+        if mode == "pickup":
+            pickups.append(display)
+        else:
+            dropoffs.append(display)
+
+    return pickups, dropoffs
+
+
+def _format_address_with_label(label, address, default_label):
+    if not label:
+        return f"{default_label}{address}"
+    return f"{label}{address}"
+
 def parse_addresses(text):
     """
     地址流程：
@@ -1357,6 +1426,7 @@ def parse_booking_data(text):
     # 先解析相互依賴的欄位
     service, flight = parse_airport_info(source)
     pickups, dropoffs = parse_addresses(source)
+    pickup_labels, dropoff_labels = parse_address_display_labels(text)
 
     data = {
         "source": source,
@@ -1371,6 +1441,8 @@ def parse_booking_data(text):
         "flight": flight,
         "pickups": pickups,
         "dropoffs": dropoffs,
+        "pickup_labels": pickup_labels,
+        "dropoff_labels": dropoff_labels,
         "people": parse_people_count(source),
         "luggage": parse_luggage(source),
     }
@@ -1402,13 +1474,18 @@ def format_booking_data(data):
     if first:
         output.append(" ".join(first))
 
-    for pickup in data["pickups"]:
-        output.append(f"⬆️{pickup}")
+    pickup_labels = data.get("pickup_labels") or []
+    dropoff_labels = data.get("dropoff_labels") or []
+
+    for i, pickup in enumerate(data["pickups"]):
+        label = pickup_labels[i] if i < len(pickup_labels) else ""
+        output.append(_format_address_with_label(label, pickup, "⬆️"))
 
     if data["dropoffs"]:
-        output.append(f"下車地點：{data['dropoffs'][0]}")
-        for dropoff in data["dropoffs"][1:]:
-            output.append(f"🔽{dropoff}")
+        for i, dropoff in enumerate(data["dropoffs"]):
+            label = dropoff_labels[i] if i < len(dropoff_labels) else ""
+            default_label = "下車地點：" if i == 0 else "🔽"
+            output.append(_format_address_with_label(label, dropoff, default_label))
 
     if data["vehicle"]:
         output.append(data["vehicle"])
@@ -1468,12 +1545,15 @@ def build_reply_texts(text):
         return replies
 
     pickup = data["pickups"][0]
+    pickup_labels = data.get("pickup_labels") or []
+    pickup_label = pickup_labels[0] if pickup_labels else ""
+    pickup_display = _format_address_with_label(pickup_label, pickup, "⬆️")
 
     # 第二則：帶代駕、上車地、附加資訊與備註
     second = []
     if data["booking_type"]:
         second.append(data["booking_type"])
-    second.append(f"⬆️{pickup}")
+    second.append(pickup_display)
     if data["vehicle"]:
         second.append(data["vehicle"])
     if data["note"]:
@@ -1489,7 +1569,7 @@ def build_reply_texts(text):
         if data["booking_type"]:
             first_line += f" {data['booking_type']}"
 
-        fourth = [first_line, f"⬆️{pickup}"]
+        fourth = [first_line, pickup_display]
         if data["vehicle"]:
             fourth.append(data["vehicle"])
         if data["note"]:
@@ -1529,6 +1609,8 @@ def _shadow_rule_snapshot(data):
         "flight": data.get("flight") or "",
         "pickups": list(data.get("pickups") or []),
         "dropoffs": list(data.get("dropoffs") or []),
+        "pickup_labels": list(data.get("pickup_labels") or []),
+        "dropoff_labels": list(data.get("dropoff_labels") or []),
         "people": int(data.get("people") or 0),
         "luggage": data.get("luggage") or "",
         "vehicle": data.get("vehicle") or "",
