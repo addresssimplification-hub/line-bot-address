@@ -26,7 +26,7 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "").strip()
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-BOT_VERSION = "v4.0.1-shadow"
+BOT_VERSION = "v4.0.2-shadow"
 GROUP_ID = "C68622c8e7215bffc165b1f657c148b4e"
 
 
@@ -1474,12 +1474,11 @@ def format_booking_data(data):
     if first:
         output.append(" ".join(first))
 
-    pickup_labels = data.get("pickup_labels") or []
     dropoff_labels = data.get("dropoff_labels") or []
 
-    for i, pickup in enumerate(data["pickups"]):
-        label = pickup_labels[i] if i < len(pickup_labels) else ""
-        output.append(_format_address_with_label(label, pickup, "⬆️"))
+    # 上車固定使用舊版顯示：⬆️
+    for pickup in data["pickups"]:
+        output.append(f"⬆️{pickup}")
 
     if data["dropoffs"]:
         for i, dropoff in enumerate(data["dropoffs"]):
@@ -1545,9 +1544,7 @@ def build_reply_texts(text):
         return replies
 
     pickup = data["pickups"][0]
-    pickup_labels = data.get("pickup_labels") or []
-    pickup_label = pickup_labels[0] if pickup_labels else ""
-    pickup_display = _format_address_with_label(pickup_label, pickup, "⬆️")
+    pickup_display = f"⬆️{pickup}"
 
     # 第二則：帶代駕、上車地、附加資訊與備註
     second = []
