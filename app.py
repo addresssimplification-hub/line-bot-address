@@ -1,5 +1,9 @@
 import os
 import re
+import json
+import threading
+import urllib.request
+import urllib.error
 from functools import lru_cache
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -13,10 +17,16 @@ app = Flask(__name__)
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
+# AI 影子分析：預設關閉，不影響正式 LINE 回覆。
+AI_SHADOW_MODE = os.getenv("AI_SHADOW_MODE", "0") == "1"
+AI_SHADOW_ALWAYS = os.getenv("AI_SHADOW_ALWAYS", "0") == "1"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "").strip()
+
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-BOT_VERSION = "v3.6.2"
+BOT_VERSION = "v4.0.0-shadow"
 GROUP_ID = "C68622c8e7215bffc165b1f657c148b4e"
 
 
@@ -1489,6 +1499,216 @@ def build_reply_texts(text):
     return replies[:4]
 
 
+
+def _shadow_redact_sensitive(source):
+    """
+    AI 不需要姓名/電話即可判斷訂單結構。
+    送出前先遮蔽這些欄位，降低不必要的個資傳送。
+    """
+    t = source
+    t = re.sub(
+        r"(?mi)^(?:姓名|名字|Line名字|LINE名字)\s*[:：].*$",
+        lambda m: m.group(0).split(":")[0].split("：")[0] + "：[已遮蔽]",
+        t
+    )
+    t = re.sub(
+        r"(?mi)^(?:手機|手機號碼|電話|TEL|連絡電話|聯絡電話)\s*[:：].*$",
+        lambda m: m.group(0).split(":")[0].split("：")[0] + "：[已遮蔽]",
+        t
+    )
+    t = re.sub(r"(?<!\d)09\d{2}[-\s]?\d{3}[-\s]?\d{3}(?!\d)", "[電話已遮蔽]", t)
+    return t
+
+
+def _shadow_rule_snapshot(data):
+    return {
+        "date": data.get("date") or "",
+        "time": data.get("time") or "",
+        "booking_type": data.get("booking_type") or "",
+        "service": data.get("service") or "",
+        "flight": data.get("flight") or "",
+        "pickups": list(data.get("pickups") or []),
+        "dropoffs": list(data.get("dropoffs") or []),
+        "people": int(data.get("people") or 0),
+        "luggage": data.get("luggage") or "",
+        "vehicle": data.get("vehicle") or "",
+        "note": data.get("note") or "",
+        "price": data.get("price") or "",
+        "airport": bool(data.get("airport")),
+    }
+
+
+def _shadow_is_suspicious(source, data):
+    """只把可能漏抓/誤抓的訂單交給 AI，避免每張都花 API 費用。"""
+    if globals().get("AI_SHADOW_ALWAYS", False):
+        return True
+
+    t = normalize_text(source)
+
+    has_pickup_cue = bool(re.search(
+        r"(上車|出發|起點|⬆️|⬆|上🚘|^\s*上\s*$)", t, re.M
+    ))
+    has_dropoff_cue = bool(re.search(
+        r"(下車|目的|目地|終點|⬇️|⬇|🔽|下🚘|^\s*下\s*$)", t, re.M
+    ))
+
+    if has_pickup_cue and not data.get("pickups"):
+        return True
+    if has_dropoff_cue and not data.get("dropoffs"):
+        return True
+
+    # 有預約/時間語意，但兩者都沒抓到；「現在/即時」本來就應隱藏。
+    if re.search(r"(日期|預約|時間|明天|今日|今天|早上|上午|下午|晚上|凌晨)", t):
+        if not data.get("date") and not data.get("time"):
+            if not re.search(r"(現在|即時|立即|馬上|立刻|當日免填|今日免填)", t):
+                return True
+
+    if re.search(r"(機場|航廈|桃機|\bT[12]\b|接機|送機|航班)", t, re.I):
+        if not data.get("airport"):
+            return True
+
+    if re.search(r"(\d+\s*人|人數|乘坐人數|行李|行李箱|吋|寸)", t):
+        if data.get("people", 0) == 0 and not data.get("luggage"):
+            return True
+
+    note = data.get("note") or ""
+    if note and re.search(r"(麻煩.*地址|電話.*不派車|填寫完整地址)", note):
+        return True
+
+    return False
+
+
+def _shadow_extract_json(output_text):
+    s = (output_text or "").strip()
+    if not s:
+        return None
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+
+    m = re.search(r"\{.*\}", s, re.S)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(0))
+    except Exception:
+        return None
+
+
+def ai_shadow_analyze(source, data):
+    """
+    OpenAI 只做背景比對，不控制正式回覆。
+    API 失敗、逾時、格式錯誤都只寫 log。
+    """
+    if not globals().get("AI_SHADOW_MODE", False):
+        return None
+    openai_api_key = globals().get("OPENAI_API_KEY", "")
+    openai_model = globals().get("OPENAI_MODEL", "")
+    if not openai_api_key or not openai_model:
+        print("[AI_SHADOW] disabled: missing OPENAI_API_KEY or OPENAI_MODEL")
+        return None
+    if not _shadow_is_suspicious(source, data):
+        return None
+
+    rule_snapshot = _shadow_rule_snapshot(data)
+
+    instructions = """你是台灣 LINE 派車訂單解析檢查器。
+只根據原文分析，不可幻想原文不存在的資訊。
+你要檢查規則引擎是否漏抓或誤抓。
+
+請只輸出一個 JSON object，不要 markdown。
+欄位：
+confidence, date, time, booking_type, service, flight,
+pickups, dropoffs, people, luggage, vehicle, note, price,
+airport, rule_result_ok, differences, reason。
+
+重要規則：
+- 「現在/即時」時間可留空。
+- 七座/7座是車型，不是七個人。
+- 裸四碼 2300 優先當 23:00，除非有明確金額提示。
+- 固定提醒文字不要當備註。
+- 地址不可自行補不存在的行政區。
+- differences 只列與 rule_result 不同的欄位。
+- confidence 使用 0 到 1。"""
+
+    payload = {
+        "original_text": _shadow_redact_sensitive(source),
+        "rule_result": rule_snapshot,
+    }
+
+    body = {
+        "model": openai_model,
+        "instructions": instructions,
+        "input": json.dumps(payload, ensure_ascii=False),
+    }
+
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/responses",
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {openai_api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            response_json = json.loads(resp.read().decode("utf-8"))
+
+        pieces = []
+        for item in response_json.get("output", []) or []:
+            for content in item.get("content", []) or []:
+                if content.get("type") == "output_text":
+                    txt = content.get("text", "")
+                    if isinstance(txt, str):
+                        pieces.append(txt)
+
+        result = _shadow_extract_json("".join(pieces))
+        if result is None:
+            print("[AI_SHADOW] invalid_json")
+            return None
+
+        print("[AI_SHADOW]", json.dumps({
+            "rule": rule_snapshot,
+            "ai": result,
+        }, ensure_ascii=False))
+        return result
+
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode("utf-8", errors="replace")[:800]
+        except Exception:
+            detail = str(e)
+        print("[AI_SHADOW] http_error:", e.code, detail)
+    except Exception as e:
+        print("[AI_SHADOW] error:", repr(e))
+
+    return None
+
+
+def _run_ai_shadow(source):
+    """獨立背景執行，避免 AI API 拖慢 LINE webhook。"""
+    try:
+        data = parse_booking_data(source)
+        ai_shadow_analyze(source, data)
+    except Exception as e:
+        print("[AI_SHADOW] worker_error:", repr(e))
+
+
+def start_ai_shadow(source):
+    if not globals().get("AI_SHADOW_MODE", False):
+        return
+    thread = threading.Thread(
+        target=_run_ai_shadow,
+        args=(source,),
+        daemon=True,
+        name="ai-shadow",
+    )
+    thread.start()
+
+
 @app.route("/", methods=["GET"])
 def home():
     return "LINE Bot is running"
@@ -1526,6 +1746,9 @@ def handle_message(event):
         event.reply_token,
         [TextSendMessage(text=item) for item in replies]
     )
+
+    # AI 僅背景觀察，不改正式回覆
+    start_ai_shadow(text)
 
 
 notify_startup()
